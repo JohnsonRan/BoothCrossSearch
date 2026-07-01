@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      1.0.0
+// @version      1.1.0
 // @description  在Booth商品页标题下方增加查VRCPirate/RipperStore同ID资源，需要登录后使用
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -129,28 +129,9 @@
     }));
   }
 
-  // /me is account-specific and 401s when logged out; forum's own /search
-  // redirects anonymous visitors to /login, so the final landing URL tells us.
-  let vrcpLoginPromise = null;
-  function checkVrcpLogin() {
-    if (!vrcpLoginPromise) {
-      vrcpLoginPromise = gmGet("https://api-v2.vrcpirate.com/me")
-        .then((res) => res.status >= 200 && res.status < 300)
-        .catch(() => false);
-    }
-    return vrcpLoginPromise;
-  }
-
-  let ripperLoginPromise = null;
-  function checkRipperLogin() {
-    if (!ripperLoginPromise) {
-      ripperLoginPromise = gmGet("https://forum.ripper.store/search")
-        .then((res) => !/\/login(\?|$)/.test(res.finalUrl || ""))
-        .catch(() => false);
-    }
-    return ripperLoginPromise;
-  }
-
+  // VRCPirate needs no login to search. RipperStore's search API returns a
+  // {status:{code:"not-authorised"}} envelope when logged out instead of the
+  // usual posts payload, so login state is read straight off that response.
   // Both getters memoize on a shared in-flight promise so the on-load auto-check
   // and a later button click never fire the same request twice; a failure clears
   // the cache so the next click can retry instead of being stuck rejected forever.
@@ -176,7 +157,14 @@
     if (!ripperPromise) {
       const url = `https://forum.ripper.store/api/search?in=titlesposts&term=${itemId}&matchWords=all&by=&categories=&searchChildren=false&hasTags=&replies=&repliesFilter=atleast&timeFilter=newer&timeRange=&sortBy=relevance&sortDirection=desc&showAs=posts&_=${Date.now()}`;
       ripperPromise = fetchJson(url)
-        .then(({ json }) => json.posts || [])
+        .then(({ json }) => {
+          if (json.status && json.status.code === "not-authorised") {
+            const err = new Error("not-authorised");
+            err.notAuthorised = true;
+            throw err;
+          }
+          return json.posts || [];
+        })
         .catch((e) => {
           ripperPromise = null;
           throw e;
@@ -194,7 +182,7 @@
     const vrcpBtn = document.createElement("button");
     vrcpBtn.className = "bcs-btn vrcp";
     vrcpBtn.disabled = true;
-    vrcpBtn.title = "检测登录状态中…";
+    vrcpBtn.title = "加载中…";
     vrcpBtn.innerHTML = '<span class="dot pending"></span>VRCPirate';
     const vrcpDot = vrcpBtn.querySelector(".dot");
     vrcpBtn.addEventListener("click", async () => {
@@ -271,47 +259,33 @@
     // Runs once the page (and its own network activity) has settled: decides
     // whether each button gets enabled, and colors its dot either way.
     const runAutoCheck = () => {
-      checkVrcpLogin()
-        .then((loggedIn) => {
-          if (loggedIn) {
-            vrcpBtn.disabled = false;
-            vrcpBtn.title = "";
-            getVrcpMatches()
-              .then((matches) => {
-                vrcpDot.className = `dot ${matches.length ? "ok" : "none"}`;
-              })
-              .catch(() => {
-                vrcpDot.className = "dot none";
-              });
-          } else {
-            vrcpBtn.title = "请先登录 VRCPirate";
-            vrcpDot.className = "dot none";
-            addWarn("⚠ 未登录 VRCPirate", "https://forum.vrcpirate.com/");
-          }
+      // VRCPirate: no login gate, search straight away.
+      vrcpBtn.disabled = false;
+      vrcpBtn.title = "";
+      getVrcpMatches()
+        .then((matches) => {
+          vrcpDot.className = `dot ${matches.length ? "ok" : "none"}`;
         })
         .catch(() => {
           vrcpDot.className = "dot none";
         });
-      checkRipperLogin()
-        .then((loggedIn) => {
-          if (loggedIn) {
+      // RipperStore: login state comes from the search response itself.
+      getRipperResult()
+        .then((posts) => {
+          ripperBtn.disabled = false;
+          ripperBtn.title = "";
+          ripperDot.className = `dot ${posts.length ? "ok" : "none"}`;
+        })
+        .catch((e) => {
+          ripperDot.className = "dot none";
+          if (e && e.notAuthorised) {
+            ripperBtn.title = "请先登录 RipperStore";
+            addWarn("⚠ 未登录 RipperStore", "https://forum.ripper.store/login");
+          } else {
+            // Network/parse error, not an auth failure — allow a manual retry.
             ripperBtn.disabled = false;
             ripperBtn.title = "";
-            getRipperResult()
-              .then((posts) => {
-                ripperDot.className = `dot ${posts.length ? "ok" : "none"}`;
-              })
-              .catch(() => {
-                ripperDot.className = "dot none";
-              });
-          } else {
-            ripperBtn.title = "请先登录 RipperStore";
-            ripperDot.className = "dot none";
-            addWarn("⚠ 未登录 RipperStore", "https://forum.ripper.store/login");
           }
-        })
-        .catch(() => {
-          ripperDot.className = "dot none";
         });
     };
     if (document.readyState === "complete") {
