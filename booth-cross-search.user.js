@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.5.5
+// @version      2.5.9
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -57,6 +57,7 @@
     .bcs-panel-item .s { font-size: 11px; color: var(--muted, #888); }
     .bcs-panel-empty { padding: 10px; font-size: 13px; color: var(--muted, #888); }
     .bcs-desc.bcs-collapsed { max-height: 240px !important; overflow: hidden !important; position: relative; }
+    .bcs-desc.bcs-desc-hidden { display: none !important; }
     .bcs-desc.bcs-collapsed::after {
       content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 90px;
       background: linear-gradient(rgba(0,0,0,0), var(--panel, #fff) 85%); pointer-events: none;
@@ -74,6 +75,7 @@
     .bcs-toggle .bcs-count { color: var(--muted, #888); font-weight: 600; }
     .bcs-toggle .bcs-chev { font-size: 10px; transition: transform .2s ease; }
     .bcs-toggle.is-open .bcs-chev { transform: rotate(180deg); }
+    .bcs-toggle-sticky { position: sticky; top: 0; z-index: 3; margin-top: 0; }
     .bcs-var-hidden { display: none !important; }
   `);
 
@@ -347,28 +349,44 @@
     return btn;
   }
 
-  // Collapse `desc` behind an expand toggle when it's taller than the preview.
-  // Returns the toggle (already inserted after `desc`), or null when short
-  // enough to leave alone.
+  // Collapse `desc` behind an expand toggle. In "preview" mode (default)
+  // it's left alone when already shorter than the preview height, and
+  // collapses to a peeking 240px otherwise; the toggle is inserted after
+  // the content and collapsing scrolls it back into view.
+  //
+  // In "hidden" mode it always collapses — fully, to zero height —
+  // regardless of length, so every instance starts visually identical; the
+  // vrcatalogue modal uses this so per-item description length can't make
+  // one card taller than another. The toggle is pinned above the content
+  // (sticky, at the section divider) instead of drifting with content
+  // length/scroll position.
+  //
+  // Returns the toggle, or null when preview mode leaves it uncollapsed.
   const DESC_PREVIEW = 240;
-  function collapseDesc(desc) {
-    if (desc.scrollHeight <= DESC_PREVIEW + 60) return null;
-    desc.classList.add("bcs-desc", "bcs-collapsed");
+  function collapseDesc(desc, mode = "preview") {
+    const hidden = mode === "hidden";
+    if (!hidden && desc.scrollHeight <= DESC_PREVIEW + 60) return null;
+    const collapsedClass = hidden ? "bcs-desc-hidden" : "bcs-collapsed";
+    desc.classList.add("bcs-desc", collapsedClass);
     const toggle = makeToggle();
+    // Sticks to the top of the scrolling modal once expanded, so collapsing
+    // a long description back down never requires scrolling back up to find
+    // the button first.
+    if (hidden) toggle.classList.add("bcs-toggle-sticky");
     const label = toggle.querySelector(".bcs-label");
     const sync = () => {
-      const open = !desc.classList.contains("bcs-collapsed");
+      const open = !desc.classList.contains(collapsedClass);
       toggle.classList.toggle("is-open", open);
       label.textContent = open ? "收起商品说明" : "展开商品说明";
     };
     sync();
     toggle.addEventListener("click", () => {
-      const collapsing = !desc.classList.contains("bcs-collapsed");
-      desc.classList.toggle("bcs-collapsed");
+      const collapsing = !desc.classList.contains(collapsedClass);
+      desc.classList.toggle(collapsedClass);
       sync();
-      if (collapsing) desc.scrollIntoView({ block: "nearest" });
+      if (collapsing && !hidden) desc.scrollIntoView({ block: "nearest" });
     });
-    desc.insertAdjacentElement("afterend", toggle);
+    desc.insertAdjacentElement(hidden ? "beforebegin" : "afterend", toggle);
     return toggle;
   }
 
@@ -900,7 +918,7 @@
           descEl.classList.remove("bcs-dim");
           if (desc) {
             descEl.textContent = desc;
-            collapseDesc(descEl);
+            collapseDesc(descEl, "hidden");
           } else {
             descEl.classList.add("bcs-dim");
             descEl.textContent = "（无商品说明）";
