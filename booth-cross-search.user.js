@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.5.4
+// @version      2.5.5
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -680,6 +680,34 @@
       }
     }
 
+    // Shared by the product modal and the zoom overlay so stacking one on
+    // top of the other behaves like a real stack: Escape and backdrop-click
+    // only close the topmost overlay, not every open overlay at once.
+    const overlayStack = [];
+    document.addEventListener(
+      "keydown",
+      (e) => {
+        if (e.key !== "Escape" || !overlayStack.length) return;
+        e.stopPropagation();
+        overlayStack[overlayStack.length - 1]();
+      },
+      true,
+    );
+    function openOverlay(el, { onClose, closeOnAnyClick } = {}) {
+      const close = () => {
+        el.remove();
+        const i = overlayStack.indexOf(close);
+        if (i !== -1) overlayStack.splice(i, 1);
+        onClose?.();
+      };
+      overlayStack.push(close);
+      el.addEventListener("click", (e) => {
+        if (closeOnAnyClick || e.target === el) close();
+      });
+      document.body.appendChild(el);
+      return close;
+    }
+
     function openModal(seed) {
       const overlay = document.createElement("div");
       overlay.className = "bcs-overlay";
@@ -763,19 +791,7 @@
         img.className = "bcs-zoom-img";
         img.src = src;
         zoomOverlay.appendChild(img);
-        const closeZoom = () => {
-          zoomOverlay.remove();
-          document.removeEventListener("keydown", onZoomKey, true);
-        };
-        const onZoomKey = (ev) => {
-          if (ev.key === "Escape") {
-            ev.stopPropagation();
-            closeZoom();
-          }
-        };
-        zoomOverlay.addEventListener("click", closeZoom);
-        document.addEventListener("keydown", onZoomKey, true);
-        document.body.appendChild(zoomOverlay);
+        openOverlay(zoomOverlay, { closeOnAnyClick: true });
       }
 
       const bar = buildSearchBar(seed.id);
@@ -784,22 +800,11 @@
 
       const prevOverflow = document.body.style.overflow;
       document.body.style.overflow = "hidden";
-      const close = () => {
-        overlay.remove();
-        document.body.style.overflow = prevOverflow;
-        document.removeEventListener("keydown", onKey, true);
-      };
-      const onKey = (e) => {
-        if (e.key === "Escape") {
-          e.stopPropagation();
-          close();
-        }
-      };
-      document.addEventListener("keydown", onKey, true);
-      overlay.addEventListener("click", (e) => {
-        if (e.target === overlay) close();
+      openOverlay(overlay, {
+        onClose: () => {
+          document.body.style.overflow = prevOverflow;
+        },
       });
-      document.body.appendChild(overlay);
 
       getBoothItem(seed.id)
         .then((item) => {
