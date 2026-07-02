@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.5.3
+// @version      2.5.4
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -522,12 +522,12 @@
         background: var(--panel, #fff); color: var(--text, #222); border-radius: 14px; box-shadow: 0 12px 48px rgba(0,0,0,.4);
         width: min(880px, 100%); max-height: min(720px, 92vh); overflow-y: auto;
         padding: 20px; position: relative; box-sizing: border-box;
-        scrollbar-width: none;
+        scrollbar-width: thin; scrollbar-color: transparent transparent;
       }
-      /* Scrollbar stays hidden until the modal is hovered, so an idle view
-         stays clean but the track/thumb still appear for anyone parked over
-         it looking to scroll. */
-      .bcs-modal:hover { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb, #ccc) transparent; }
+      /* Gutter (scrollbar-width: thin / webkit width: 8px) stays reserved at
+         all times so hovering never resizes the modal — only the thumb color
+         toggles, keeping an idle view clean while scroll stays discoverable. */
+      .bcs-modal:hover { scrollbar-color: var(--scrollbar-thumb, #ccc) transparent; }
       .bcs-modal::-webkit-scrollbar { width: 8px; background: transparent; }
       .bcs-modal::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
       .bcs-modal:hover::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, #ccc); }
