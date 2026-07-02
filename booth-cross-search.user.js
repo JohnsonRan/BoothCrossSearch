@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.3.1
+// @version      2.3.2
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -523,7 +523,7 @@
         border-radius: 10px; display: block;
       }
       .bcs-main-img.paginated { cursor: pointer; }
-      .bcs-count {
+      .bcs-img-count {
         position: absolute; right: 8px; bottom: 8px; z-index: 2;
         background: rgba(0,0,0,.55); color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 10px;
       }
@@ -654,7 +654,7 @@
           <div class="bcs-modal-top">
             <div class="bcs-media">
               <img class="bcs-main-img" alt="">
-              <span class="bcs-count" hidden></span>
+              <span class="bcs-img-count" hidden></span>
               <div class="bcs-thumbs" hidden></div>
             </div>
             <div class="bcs-info">
@@ -670,7 +670,7 @@
 
       const mainImg = overlay.querySelector(".bcs-main-img");
       const thumbs = overlay.querySelector(".bcs-thumbs");
-      const countEl = overlay.querySelector(".bcs-count");
+      const countEl = overlay.querySelector(".bcs-img-count");
       const titleEl = overlay.querySelector(".bcs-title");
       const metaEl = overlay.querySelector(".bcs-meta");
       const varEl = overlay.querySelector(".bcs-variations");
