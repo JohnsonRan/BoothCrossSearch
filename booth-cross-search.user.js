@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.1.0
+// @version      2.2.0
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -563,6 +563,7 @@
       }
     `);
 
+    const TAG_SHOW = 8;
     const boothCache = new Map();
     const getBoothItem = (id) =>
       memoized(boothCache, id, () =>
@@ -714,9 +715,36 @@
           }
 
           tagsEl.innerHTML = "";
-          (item.tags || []).forEach((tg) => {
+          const nextTagToggle = tagsEl.nextElementSibling;
+          if (nextTagToggle && nextTagToggle.classList.contains("bcs-toggle")) {
+            nextTagToggle.remove();
+          }
+          const tags = item.tags || [];
+          tags.forEach((tg) => {
             tagsEl.appendChild(makeLink(tg.name, tg.url, "bcs-tag"));
           });
+          if (tags.length > TAG_SHOW + 2) {
+            const tagEls = [...tagsEl.children];
+            const hidden = tagEls.slice(TAG_SHOW);
+            const setHidden = (h) =>
+              hidden.forEach((el) => el.classList.toggle("bcs-var-hidden", h));
+            setHidden(true);
+
+            const toggle = makeToggle();
+            toggle.querySelector(".bcs-count").textContent = `共 ${tags.length} 个`;
+            const label = toggle.querySelector(".bcs-label");
+            const sync = (open) => {
+              toggle.classList.toggle("is-open", open);
+              label.textContent = open ? "收起标签" : `展开其余 ${hidden.length} 个标签`;
+            };
+            sync(false);
+            toggle.addEventListener("click", () => {
+              const open = hidden[0].classList.contains("bcs-var-hidden");
+              setHidden(!open);
+              sync(open);
+            });
+            tagsEl.insertAdjacentElement("afterend", toggle);
+          }
 
           images = (item.images || []).filter((im) => im.original);
           if (images.length > 1) {
