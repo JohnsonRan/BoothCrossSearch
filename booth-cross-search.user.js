@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.5.9
+// @version      2.6.5
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -575,7 +575,33 @@
         position: fixed; inset: 0; z-index: 100000; background: #000000eb;
         display: flex; align-items: center; justify-content: center; padding: 24px; cursor: zoom-out;
       }
-      .bcs-zoom-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+      /* Fixed-size stage (copies vrcatalogue's .lightbox-main) so nav buttons
+         stay put regardless of image aspect — they don't chase the image box.
+         Image is object-fit:contain inside; the 9rem width gutter leaves room
+         for the outside nav. */
+      .bcs-zoom-stage { position: relative; width: min(100vw - 9rem, 1200px); height: min(80vh, 1000px); }
+      .bcs-zoom-img { width: 100%; height: 100%; object-fit: contain; display: block; }
+      /* .bcs-znav copies vrcatalogue's .lightbox-nav 1:1 (3.5rem square, sits
+         .75rem outside the image edge) so the zoom controls match the site. */
+      .bcs-znav {
+        position: absolute; top: 50%; margin-top: -1.75rem; z-index: 2;
+        width: 3.5rem; height: 3.5rem; border-radius: 3px;
+        border: 1px solid rgba(255,255,255,.18); background: #0000008c; color: #fff;
+        display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0;
+        transition: background .12s ease, border-color .12s ease, transform .12s ease;
+      }
+      .bcs-znav:hover { background: #ffffff26; border-color: #ffffff59; transform: scale(1.1); }
+      .bcs-znav:active { transform: scale(1.02); }
+      .bcs-znav svg { width: 24px; height: 24px; }
+      .bcs-znav--left { right: calc(100% + .75rem); }
+      .bcs-znav--right { left: calc(100% + .75rem); }
+      @media (max-width: 640px) {
+        .bcs-zoom-overlay { padding: 12px; }
+        .bcs-znav { width: 2.5rem; height: 2.5rem; margin-top: -1.25rem; }
+        .bcs-znav svg { width: 20px; height: 20px; }
+        .bcs-znav--left { right: calc(100% + .5rem); }
+        .bcs-znav--right { left: calc(100% + .5rem); }
+      }
       .bcs-img-count {
         position: absolute; right: 8px; bottom: 8px; z-index: 2;
         background: rgba(0,0,0,.55); color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 10px;
@@ -698,32 +724,67 @@
       }
     }
 
-    // Shared by the product modal and the zoom overlay so stacking one on
-    // top of the other behaves like a real stack: Escape and backdrop-click
-    // only close the topmost overlay, not every open overlay at once.
+    // Shared by the product modal and the zoom overlay so stacking one on top
+    // of the other behaves like a real stack: Escape/backdrop-click close, and
+    // ArrowLeft/Right paging, are routed to the topmost overlay only. Each
+    // overlay registers its own `onArrow` (image paging) via openOverlay, so
+    // there's a single key dispatcher rather than per-overlay listeners.
     const overlayStack = [];
     document.addEventListener(
       "keydown",
       (e) => {
-        if (e.key !== "Escape" || !overlayStack.length) return;
-        e.stopPropagation();
-        overlayStack[overlayStack.length - 1]();
+        if (!overlayStack.length) return;
+        const top = overlayStack[overlayStack.length - 1];
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          top.close();
+        } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+          if (!top.onArrow) return;
+          e.stopPropagation();
+          top.onArrow(e.key === "ArrowLeft" ? -1 : 1);
+        }
       },
       true,
     );
-    function openOverlay(el, { onClose, closeOnAnyClick } = {}) {
-      const close = () => {
-        el.remove();
-        const i = overlayStack.indexOf(close);
-        if (i !== -1) overlayStack.splice(i, 1);
-        onClose?.();
+    function openOverlay(el, { onClose, closeOnAnyClick, onArrow } = {}) {
+      const entry = {
+        onArrow,
+        close: () => {
+          el.remove();
+          const i = overlayStack.indexOf(entry);
+          if (i !== -1) overlayStack.splice(i, 1);
+          onClose?.();
+        },
       };
-      overlayStack.push(close);
+      overlayStack.push(entry);
       el.addEventListener("click", (e) => {
-        if (closeOnAnyClick || e.target === el) close();
+        if (closeOnAnyClick || e.target === el) entry.close();
       });
       document.body.appendChild(el);
-      return close;
+      return entry.close;
+    }
+
+    // Prev/next arrow buttons, shared by the modal (.bcs-nav, inside the image)
+    // and the zoom overlay (.bcs-znav, outside it). Builds a left(-1)/right(+1)
+    // pair into `parent`, each wired to step(dir); clicks stopPropagation so a
+    // backdrop close-on-click never fires. `cls` is the base class; each button
+    // also gets `${cls}--left` / `${cls}--right`. Returns { left, right }.
+    const NAV_ARROW = { left: "15 18 9 12 15 6", right: "9 18 15 12 9 6" };
+    function buildNavPair(parent, cls, step) {
+      const mk = (dir, side, label) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `${cls} ${cls}--${side}`;
+        btn.setAttribute("aria-label", label);
+        btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="${NAV_ARROW[side]}"></polyline></svg>`;
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          step(dir);
+        });
+        parent.appendChild(btn);
+        return btn;
+      };
+      return { left: mk(-1, "left", "Previous image"), right: mk(1, "right", "Next image") };
     }
 
     function openModal(seed) {
@@ -737,12 +798,6 @@
               <div class="bcs-img-stage">
                 <img class="bcs-main-img" alt="">
                 <span class="bcs-img-count" hidden></span>
-                <button type="button" class="bcs-nav bcs-nav--left" hidden aria-label="Previous image">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
-                </button>
-                <button type="button" class="bcs-nav bcs-nav--right" hidden aria-label="Next image">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
-                </button>
               </div>
               <div class="bcs-thumbs" hidden></div>
             </div>
@@ -758,10 +813,9 @@
         </div>`;
 
       const mainImg = overlay.querySelector(".bcs-main-img");
+      const stageEl = overlay.querySelector(".bcs-img-stage");
       const thumbs = overlay.querySelector(".bcs-thumbs");
       const countEl = overlay.querySelector(".bcs-img-count");
-      const navLeft = overlay.querySelector(".bcs-nav--left");
-      const navRight = overlay.querySelector(".bcs-nav--right");
       const titleEl = overlay.querySelector(".bcs-title");
       const metaEl = overlay.querySelector(".bcs-meta");
       const varEl = overlay.querySelector(".bcs-variations");
@@ -791,25 +845,47 @@
         activeThumb?.classList.add("on");
         activeThumb?.scrollIntoView({ block: "nearest", inline: "nearest" });
       };
-      navLeft.addEventListener("click", (e) => {
-        e.stopPropagation();
-        showImage(idx - 1);
-      });
-      navRight.addEventListener("click", (e) => {
-        e.stopPropagation();
-        showImage(idx + 1);
-      });
+      const nav = buildNavPair(stageEl, "bcs-nav", (dir) => showImage(idx + dir));
+      nav.left.hidden = true;
+      nav.right.hidden = true;
       mainImg.addEventListener("click", () => openZoom());
       function openZoom() {
         const src = images.length ? images[idx].original : mainImg.src;
         if (!src) return;
         const zoomOverlay = document.createElement("div");
         zoomOverlay.className = "bcs-zoom-overlay";
+        // Fixed-size stage (see .bcs-zoom-stage) holds the contained image;
+        // nav buttons pin to the stage edges so they stay put across images.
+        const stage = document.createElement("div");
+        stage.className = "bcs-zoom-stage";
         const img = document.createElement("img");
         img.className = "bcs-zoom-img";
         img.src = src;
-        zoomOverlay.appendChild(img);
-        openOverlay(zoomOverlay, { closeOnAnyClick: true });
+        stage.appendChild(img);
+        zoomOverlay.appendChild(stage);
+
+        // The zoom pages through the same image list but keeps its OWN index so
+        // it only repaints the visible zoom <img> — the occluded modal isn't
+        // touched per step (no offscreen decode / thumb-strip reflow). The modal
+        // is synced once on close so it lands on the last-viewed image.
+        let zi = idx;
+        let onArrow;
+        if (images.length > 1) {
+          const step = (dir) => {
+            zi = (zi + dir + images.length) % images.length;
+            img.src = images[zi].original;
+          };
+          buildNavPair(stage, "bcs-znav", step);
+          onArrow = step;
+        }
+
+        openOverlay(zoomOverlay, {
+          closeOnAnyClick: true,
+          onArrow,
+          onClose: () => {
+            if (zi !== idx) showImage(zi);
+          },
+        });
       }
 
       const bar = buildSearchBar(seed.id);
@@ -819,6 +895,7 @@
       const prevOverflow = document.body.style.overflow;
       document.body.style.overflow = "hidden";
       openOverlay(overlay, {
+        onArrow: (dir) => showImage(idx + dir),
         onClose: () => {
           document.body.style.overflow = prevOverflow;
         },
@@ -890,8 +967,8 @@
           images = (item.images || []).filter((im) => im.original);
           if (images.length > 1) {
             countEl.hidden = false;
-            navLeft.hidden = false;
-            navRight.hidden = false;
+            nav.left.hidden = false;
+            nav.right.hidden = false;
             thumbs.hidden = false;
             thumbEls = images.map((im, i) => {
               const b = document.createElement("button");
