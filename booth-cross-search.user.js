@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.2.0
+// @version      2.3.0
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -40,6 +40,7 @@
     .bcs-btn .dot.pending { background: #bbb; animation: bcs-pulse 1s ease-in-out infinite; }
     .bcs-btn .dot.ok { background: #2e9e44; }
     .bcs-btn .dot.none { background: #e2394f; }
+    .bcs-btn .dot.error { background: #e0a626; }
     @keyframes bcs-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
     .bcs-btn:disabled { opacity: .5; cursor: wait; }
     .bcs-warn { font-size: 11px; color: #b8860b; font-weight: 600; text-decoration: none; }
@@ -157,16 +158,26 @@
     });
   }
 
+  // Single source of truth for the two ways a search request can fail, so the
+  // click handler and autoCheck don't each re-derive (and drift on) the copy.
+  const RETRY_MSG = "查询失败，点击重试";
+  const RIPPER_LOGIN_MSG = "请先登录 RipperStore";
+  function classifyRipperError(e) {
+    return e && e.notAuthorised
+      ? { auth: true, message: RIPPER_LOGIN_MSG }
+      : { auth: false, message: RETRY_MSG };
+  }
+
   function closePanels(bar) {
     bar.querySelectorAll(".bcs-panel").forEach((p) => p.remove());
   }
 
-  function showPanel(bar, entries) {
+  function showPanel(bar, entries, emptyMessage) {
     closePanels(bar);
     const panel = document.createElement("div");
     panel.className = "bcs-panel";
     if (!entries.length) {
-      panel.innerHTML = '<div class="bcs-panel-empty">没有找到匹配结果</div>';
+      panel.innerHTML = `<div class="bcs-panel-empty">${emptyMessage || "没有找到匹配结果"}</div>`;
     } else {
       for (const e of entries) {
         const a = document.createElement("a");
@@ -229,8 +240,8 @@
           );
         }
       } catch (e) {
-        vrcpDot.className = "dot none";
-        showPanel(bar, []);
+        vrcpDot.className = "dot error";
+        showPanel(bar, [], RETRY_MSG);
       } finally {
         vrcpBtn.disabled = false;
       }
@@ -257,8 +268,9 @@
           })),
         );
       } catch (e) {
-        ripperDot.className = "dot none";
-        showPanel(bar, []);
+        const { auth, message } = classifyRipperError(e);
+        ripperDot.className = `dot ${auth ? "none" : "error"}`;
+        showPanel(bar, [], message);
       } finally {
         ripperBtn.disabled = false;
       }
@@ -287,7 +299,8 @@
           vrcpDot.className = `dot ${matches.length ? "ok" : "none"}`;
         })
         .catch(() => {
-          vrcpDot.className = "dot none";
+          vrcpDot.className = "dot error";
+          vrcpBtn.title = RETRY_MSG;
         });
       // RipperStore: login state comes from the search response itself.
       getRipperResult(itemId)
@@ -297,14 +310,14 @@
           ripperDot.className = `dot ${posts.length ? "ok" : "none"}`;
         })
         .catch((e) => {
-          ripperDot.className = "dot none";
-          if (e && e.notAuthorised) {
-            ripperBtn.title = "请先登录 RipperStore";
+          const { auth, message } = classifyRipperError(e);
+          ripperDot.className = `dot ${auth ? "none" : "error"}`;
+          ripperBtn.title = message;
+          if (auth) {
             addWarn("⚠ 未登录 RipperStore", "https://forum.ripper.store/login");
           } else {
             // Network/parse error, not an auth failure — allow a manual retry.
             ripperBtn.disabled = false;
-            ripperBtn.title = "";
           }
         });
     };
