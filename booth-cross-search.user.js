@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.4.0
+// @version      2.5.0
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -532,9 +532,13 @@
       .bcs-media { flex: 0 0 46%; min-width: 0; position: relative; }
       .bcs-main-img {
         width: 100%; aspect-ratio: 1; object-fit: contain; background: var(--skel, #f4f4f5);
-        border-radius: 10px; display: block;
+        border-radius: 10px; display: block; cursor: zoom-in;
       }
-      .bcs-main-img.paginated { cursor: pointer; }
+      .bcs-zoom-overlay {
+        position: fixed; inset: 0; z-index: 100000; background: rgba(0,0,0,.85);
+        display: flex; align-items: center; justify-content: center; padding: 24px; cursor: zoom-out;
+      }
+      .bcs-zoom-img { max-width: 100%; max-height: 100%; object-fit: contain; }
       .bcs-img-count {
         position: absolute; right: 8px; bottom: 8px; z-index: 2;
         background: rgba(0,0,0,.55); color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 10px;
@@ -711,7 +715,43 @@
         activeThumb?.classList.add("on");
         activeThumb?.scrollIntoView({ block: "nearest", inline: "nearest" });
       };
-      mainImg.addEventListener("click", () => showImage(idx + 1));
+      // Left third = prev image, middle third = zoom, right third = next image.
+      // Prev/next only fire when there's more than one image to page through.
+      mainImg.addEventListener("click", (e) => {
+        const rect = mainImg.getBoundingClientRect();
+        const third = rect.width / 3;
+        const x = e.clientX - rect.left;
+        if (images.length > 1 && x < third) {
+          showImage(idx - 1);
+        } else if (images.length > 1 && x > third * 2) {
+          showImage(idx + 1);
+        } else {
+          openZoom();
+        }
+      });
+      function openZoom() {
+        const src = images.length ? images[idx].original : mainImg.src;
+        if (!src) return;
+        const zoomOverlay = document.createElement("div");
+        zoomOverlay.className = "bcs-zoom-overlay";
+        const img = document.createElement("img");
+        img.className = "bcs-zoom-img";
+        img.src = src;
+        zoomOverlay.appendChild(img);
+        const closeZoom = () => {
+          zoomOverlay.remove();
+          document.removeEventListener("keydown", onZoomKey, true);
+        };
+        const onZoomKey = (ev) => {
+          if (ev.key === "Escape") {
+            ev.stopPropagation();
+            closeZoom();
+          }
+        };
+        zoomOverlay.addEventListener("click", closeZoom);
+        document.addEventListener("keydown", onZoomKey, true);
+        document.body.appendChild(zoomOverlay);
+      }
 
       const bar = buildSearchBar(seed.id);
       metaEl.insertAdjacentElement("afterend", bar);
@@ -801,7 +841,6 @@
 
           images = (item.images || []).filter((im) => im.original);
           if (images.length > 1) {
-            mainImg.classList.add("paginated");
             countEl.hidden = false;
             thumbs.hidden = false;
             thumbEls = images.map((im, i) => {
