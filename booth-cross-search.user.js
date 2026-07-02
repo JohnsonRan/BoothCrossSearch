@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.5.1
+// @version      2.5.3
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -522,12 +522,16 @@
         background: var(--panel, #fff); color: var(--text, #222); border-radius: 14px; box-shadow: 0 12px 48px rgba(0,0,0,.4);
         width: min(880px, 100%); max-height: min(720px, 92vh); overflow-y: auto;
         padding: 20px; position: relative; box-sizing: border-box;
-        scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb, #ccc) transparent;
+        scrollbar-width: none;
       }
-      .bcs-modal::-webkit-scrollbar { width: 8px; }
-      .bcs-modal::-webkit-scrollbar-track { background: transparent; }
-      .bcs-modal::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, #ccc); border-radius: 4px; }
-      .bcs-modal::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover, #bbb); }
+      /* Scrollbar stays hidden until the modal is hovered, so an idle view
+         stays clean but the track/thumb still appear for anyone parked over
+         it looking to scroll. */
+      .bcs-modal:hover { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb, #ccc) transparent; }
+      .bcs-modal::-webkit-scrollbar { width: 8px; background: transparent; }
+      .bcs-modal::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
+      .bcs-modal:hover::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, #ccc); }
+      .bcs-modal:hover::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover, #bbb); }
       .bcs-modal-top { display: flex; gap: 20px; align-items: flex-start; }
       .bcs-media { flex: 0 0 46%; min-width: 0; }
       .bcs-img-stage { position: relative; }
