@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.5.0
+// @version      2.5.1
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -529,13 +529,28 @@
       .bcs-modal::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, #ccc); border-radius: 4px; }
       .bcs-modal::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover, #bbb); }
       .bcs-modal-top { display: flex; gap: 20px; align-items: flex-start; }
-      .bcs-media { flex: 0 0 46%; min-width: 0; position: relative; }
+      .bcs-media { flex: 0 0 46%; min-width: 0; }
+      .bcs-img-stage { position: relative; }
       .bcs-main-img {
         width: 100%; aspect-ratio: 1; object-fit: contain; background: var(--skel, #f4f4f5);
         border-radius: 10px; display: block; cursor: zoom-in;
       }
+      /* .bcs-nav / .bcs-zoom-overlay mirror vrcatalogue.com's own
+         .lightbox-nav / .lightbox styling so the image controls feel native
+         to the site rather than bespoke to this script. */
+      .bcs-nav {
+        position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
+        width: 2.25rem; height: 2.25rem; border-radius: 3px;
+        border: 1px solid rgba(255,255,255,.18); background: rgba(0,0,0,.55); color: #fff;
+        display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0;
+        transition: background .12s ease, border-color .12s ease;
+      }
+      .bcs-nav:hover { background: rgba(0,0,0,.75); border-color: rgba(255,255,255,.35); }
+      .bcs-nav svg { width: 18px; height: 18px; }
+      .bcs-nav--left { left: 8px; }
+      .bcs-nav--right { right: 8px; }
       .bcs-zoom-overlay {
-        position: fixed; inset: 0; z-index: 100000; background: rgba(0,0,0,.85);
+        position: fixed; inset: 0; z-index: 100000; background: #000000eb;
         display: flex; align-items: center; justify-content: center; padding: 24px; cursor: zoom-out;
       }
       .bcs-zoom-img { max-width: 100%; max-height: 100%; object-fit: contain; }
@@ -669,8 +684,16 @@
         <div class="bcs-modal" role="dialog" aria-modal="true">
           <div class="bcs-modal-top">
             <div class="bcs-media">
-              <img class="bcs-main-img" alt="">
-              <span class="bcs-img-count" hidden></span>
+              <div class="bcs-img-stage">
+                <img class="bcs-main-img" alt="">
+                <span class="bcs-img-count" hidden></span>
+                <button type="button" class="bcs-nav bcs-nav--left" hidden aria-label="Previous image">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                </button>
+                <button type="button" class="bcs-nav bcs-nav--right" hidden aria-label="Next image">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                </button>
+              </div>
               <div class="bcs-thumbs" hidden></div>
             </div>
             <div class="bcs-info">
@@ -687,6 +710,8 @@
       const mainImg = overlay.querySelector(".bcs-main-img");
       const thumbs = overlay.querySelector(".bcs-thumbs");
       const countEl = overlay.querySelector(".bcs-img-count");
+      const navLeft = overlay.querySelector(".bcs-nav--left");
+      const navRight = overlay.querySelector(".bcs-nav--right");
       const titleEl = overlay.querySelector(".bcs-title");
       const metaEl = overlay.querySelector(".bcs-meta");
       const varEl = overlay.querySelector(".bcs-variations");
@@ -700,8 +725,9 @@
       overlay.querySelector(".bcs-buy").href = boothUrl;
 
       // Multi-image nav: filled in once the Booth .json resolves (see below).
-      // Clicking the main image itself pages to the next one; thumbnails
-      // below jump straight to a given image.
+      // Dedicated left/right buttons page through images (only shown once
+      // there's more than one); thumbnails below jump straight to a given
+      // image; clicking the image itself opens a fullscreen zoom.
       let images = [];
       let thumbEls = [];
       let idx = 0;
@@ -715,20 +741,15 @@
         activeThumb?.classList.add("on");
         activeThumb?.scrollIntoView({ block: "nearest", inline: "nearest" });
       };
-      // Left third = prev image, middle third = zoom, right third = next image.
-      // Prev/next only fire when there's more than one image to page through.
-      mainImg.addEventListener("click", (e) => {
-        const rect = mainImg.getBoundingClientRect();
-        const third = rect.width / 3;
-        const x = e.clientX - rect.left;
-        if (images.length > 1 && x < third) {
-          showImage(idx - 1);
-        } else if (images.length > 1 && x > third * 2) {
-          showImage(idx + 1);
-        } else {
-          openZoom();
-        }
+      navLeft.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showImage(idx - 1);
       });
+      navRight.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showImage(idx + 1);
+      });
+      mainImg.addEventListener("click", () => openZoom());
       function openZoom() {
         const src = images.length ? images[idx].original : mainImg.src;
         if (!src) return;
@@ -842,6 +863,8 @@
           images = (item.images || []).filter((im) => im.original);
           if (images.length > 1) {
             countEl.hidden = false;
+            navLeft.hidden = false;
+            navRight.hidden = false;
             thumbs.hidden = false;
             thumbEls = images.map((im, i) => {
               const b = document.createElement("button");
