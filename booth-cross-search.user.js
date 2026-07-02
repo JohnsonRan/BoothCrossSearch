@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.3.0
+// @version      2.3.1
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -577,6 +577,7 @@
     `);
 
     const TAG_SHOW = 8;
+    const VAR_SHOW = 3;
     const boothCache = new Map();
     const getBoothItem = (id) =>
       memoized(boothCache, id, () =>
@@ -598,6 +599,10 @@
     // number.
     function renderVariations(container, variations, overallPrice) {
       container.innerHTML = "";
+      const nextToggle = container.nextElementSibling;
+      if (nextToggle && nextToggle.classList.contains("bcs-toggle")) {
+        nextToggle.remove();
+      }
       if (!variations || variations.length < 2) return;
       const currency = /([A-Z]{3})\s*~?$/.exec(overallPrice || "")?.[1];
       variations.forEach((v) => {
@@ -615,6 +620,29 @@
         row.append(name, price);
         container.appendChild(row);
       });
+
+      if (variations.length > VAR_SHOW + 1) {
+        const rows = [...container.children];
+        const hidden = rows.slice(VAR_SHOW);
+        const setHidden = (h) =>
+          hidden.forEach((el) => el.classList.toggle("bcs-var-hidden", h));
+        setHidden(true);
+
+        const toggle = makeToggle();
+        toggle.querySelector(".bcs-count").textContent = `共 ${variations.length} 件`;
+        const label = toggle.querySelector(".bcs-label");
+        const sync = (open) => {
+          toggle.classList.toggle("is-open", open);
+          label.textContent = open ? "收起商品" : `展开其余 ${hidden.length} 件`;
+        };
+        sync(false);
+        toggle.addEventListener("click", () => {
+          const open = hidden[0].classList.contains("bcs-var-hidden");
+          setHidden(!open);
+          sync(open);
+        });
+        container.insertAdjacentElement("afterend", toggle);
+      }
     }
 
     function openModal(seed) {
