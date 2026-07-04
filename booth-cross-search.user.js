@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.6.5
+// @version      2.6.6
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -560,13 +560,13 @@
       /* .bcs-nav / .bcs-zoom-overlay mirror vrcatalogue.com's own
          .lightbox-nav / .lightbox styling so the image controls feel native
          to the site rather than bespoke to this script. */
-      .bcs-nav {
-        position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
-        width: 2.25rem; height: 2.25rem; border-radius: 3px;
-        border: 1px solid rgba(255,255,255,.18); background: rgba(0,0,0,.55); color: #fff;
+      .bcs-nav, .bcs-znav {
+        position: absolute; top: 50%; z-index: 2; border-radius: 3px;
+        border: 1px solid rgba(255,255,255,.18); color: #fff;
         display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0;
-        transition: background .12s ease, border-color .12s ease;
+        transition: background .12s ease, border-color .12s ease, transform .12s ease;
       }
+      .bcs-nav { transform: translateY(-50%); width: 2.25rem; height: 2.25rem; background: rgba(0,0,0,.55); }
       .bcs-nav:hover { background: rgba(0,0,0,.75); border-color: rgba(255,255,255,.35); }
       .bcs-nav svg { width: 18px; height: 18px; }
       .bcs-nav--left { left: 8px; }
@@ -582,14 +582,9 @@
       .bcs-zoom-stage { position: relative; width: min(100vw - 9rem, 1200px); height: min(80vh, 1000px); }
       .bcs-zoom-img { width: 100%; height: 100%; object-fit: contain; display: block; }
       /* .bcs-znav copies vrcatalogue's .lightbox-nav 1:1 (3.5rem square, sits
-         .75rem outside the image edge) so the zoom controls match the site. */
-      .bcs-znav {
-        position: absolute; top: 50%; margin-top: -1.75rem; z-index: 2;
-        width: 3.5rem; height: 3.5rem; border-radius: 3px;
-        border: 1px solid rgba(255,255,255,.18); background: #0000008c; color: #fff;
-        display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0;
-        transition: background .12s ease, border-color .12s ease, transform .12s ease;
-      }
+         .75rem outside the image edge) so the zoom controls match the site.
+         Box/appearance base is shared with .bcs-nav above. */
+      .bcs-znav { margin-top: -1.75rem; width: 3.5rem; height: 3.5rem; background: #0000008c; }
       .bcs-znav:hover { background: #ffffff26; border-color: #ffffff59; transform: scale(1.1); }
       .bcs-znav:active { transform: scale(1.02); }
       .bcs-znav svg { width: 24px; height: 24px; }
@@ -845,7 +840,8 @@
         activeThumb?.classList.add("on");
         activeThumb?.scrollIntoView({ block: "nearest", inline: "nearest" });
       };
-      const nav = buildNavPair(stageEl, "bcs-nav", (dir) => showImage(idx + dir));
+      const stepImage = (dir) => showImage(idx + dir);
+      const nav = buildNavPair(stageEl, "bcs-nav", stepImage);
       nav.left.hidden = true;
       nav.right.hidden = true;
       mainImg.addEventListener("click", () => openZoom());
@@ -895,7 +891,7 @@
       const prevOverflow = document.body.style.overflow;
       document.body.style.overflow = "hidden";
       openOverlay(overlay, {
-        onArrow: (dir) => showImage(idx + dir),
+        onArrow: stepImage,
         onClose: () => {
           document.body.style.overflow = prevOverflow;
         },
