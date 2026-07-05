@@ -90,10 +90,14 @@ multi-image gallery. That endpoint 403s without a browser-like `User-Agent`, and
 gracefully (shows an R18/login hint) if the fetch fails. The fetched JSON is stripped down to just
 the fields the modal renders before caching, to keep the persistent blob small.
 
-A cross-site "recently viewed" history (`bcs-history` GM value, deduped by item id, capped at 60)
-is written from both Booth item-page visits and vrcatalogue modal opens, but only vrcatalogue shows
-UI for it: a fixed corner button (`.bcs-hist-fab`, hidden without storage grants) opens a grid
-panel whose entries reopen the product modal.
+"Recently viewed" is Booth's own server-side history (`booth.pm/history.json`, same card
+shape as the wish endpoint, unpaginated; 200 + `[]` when logged out — login state is
+disambiguated via the wish endpoint's 401 instead). There is no local copy: Booth records
+item-page visits natively, and vrcatalogue modal opens hit `items/<id>.json` with cookies,
+which Booth also records (a modal open served from the 24h item cache never reaches Booth,
+so `markSeen` echoes it into the in-memory seen set for the card veil). Only vrcatalogue
+shows UI for it: a fixed corner button (`.bcs-hist-fab`) opens a grid panel whose entries
+reopen the product modal; logged out, the panel shows a login hint.
 
 A star on the vrcatalogue modal and history tiles syncs with the user's real Booth
 wish list ("スキ!"): state is a paginated fetch of

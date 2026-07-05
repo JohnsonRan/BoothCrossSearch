@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.9.5
+// @version      2.10.0
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -139,19 +139,32 @@
   // list so stars just render unfilled. Endpoints are private — if Booth
   // changes them only the star feature degrades; search and history are
   // unaffected.
+  // Shared projection of a Booth card object (wish + history endpoints
+  // return the same shape) down to what the tiles render.
+  function cardEntry(it) {
+    return {
+      id: String(it.id),
+      title: it.name || "",
+      img: (it.thumbnail_image_urls && it.thumbnail_image_urls[0]) || "",
+      price: it.price || "",
+      shop: (it.shop && it.shop.name) || "",
+    };
+  }
+
   const WISH_PAGE_CAP = 25;
   // Stable container, mutated in place by every (re)fetch and by setWished:
   // everything holding a reference (badge pass, open modal, panel closures)
   // sees fresh data without re-subscribing. Pass fresh=true to re-walk the
   // endpoint (the history panel does, so likes made on booth.pm show up
   // without a page reload); a failed refresh keeps the previous contents.
-  const wishData = { ids: new Set(), byId: new Map() };
+  const wishData = { ids: new Set(), byId: new Map(), loggedOut: false };
   let wishListPromise = null;
   function getWishList(fresh) {
     if (!wishListPromise || fresh) {
       const ids = new Set();
       const byId = new Map();
-      const done = () => {
+      const done = (loggedOut) => {
+        wishData.loggedOut = !!loggedOut;
         wishData.ids.clear();
         wishData.byId.clear();
         ids.forEach((id) => wishData.ids.add(id));
@@ -162,24 +175,18 @@
         fetchJson(
           `https://accounts.booth.pm/wish_list_name_items.json?page=${page}`,
         ).then(({ status, json }) => {
-          if (status === 401) return done(); // logged out -> empty
+          if (status === 401) return done(true); // logged out -> empty
           if (status !== 200 || !json || !Array.isArray(json.items)) {
             throw new Error(`wish_list_name_items ${status}`);
           }
           for (const it of json.items) {
-            const id = String(it.id);
-            ids.add(id);
-            byId.set(id, {
-              id,
-              title: it.name || "",
-              img: (it.thumbnail_image_urls && it.thumbnail_image_urls[0]) || "",
-              price: it.price || "",
-              shop: (it.shop && it.shop.name) || "",
-            });
+            const entry = cardEntry(it);
+            ids.add(entry.id);
+            byId.set(entry.id, entry);
           }
           const next = json.pagination && json.pagination.next_page;
           if (next && next <= WISH_PAGE_CAP) return fetchPage(next);
-          return done();
+          return done(false);
         });
       const p = fetchPage(1).catch((e) => {
         if (wishListPromise === p) wishListPromise = null;
@@ -373,16 +380,11 @@
     }, ripperStore);
   }
 
-  // Cross-site "recently viewed" list (newest first, deduped by item id).
-  // Written from both hosts — Booth item-page visits and vrcatalogue modal
-  // opens — but only vrcatalogue renders a UI for it (the corner button).
-  const HIST_KEY = "bcs-history";
-  const HIST_MAX = 60;
   // booth.pximg.net serves a whitelist of resize variants via a /c/<spec>/
   // path prefix — arbitrary sizes 403, and the item JSON's "resized" is a
-  // blurry c/72x72. History stores the canonical full-size URL (spec
-  // stripped); each render site applies the variant it needs. Non-Booth-CDN
-  // URLs pass through untouched.
+  // blurry c/72x72. Callers pass canonical full-size URLs around and each
+  // render site applies the variant it needs. Non-Booth-CDN URLs pass
+  // through untouched.
   function boothImgVariant(url, spec) {
     if (!url || !url.includes("booth.pximg.net/")) return url || "";
     const bare = url.replace(/booth\.pximg\.net\/c\/[^/]+\//, "booth.pximg.net/");
@@ -390,39 +392,40 @@
   }
   // Whitelisted variant sized for the history grid (130px+ cells on hi-DPI).
   const HIST_IMG_SPEC = "c/300x300_a2_g5";
-  function readHistory() {
-    if (!canStore) return [];
-    const list = gmReadJson(HIST_KEY, []);
-    return Array.isArray(list) ? list : [];
+
+  // "Recently viewed" comes from Booth's own server-side history
+  // (booth.pm/history.json, same card shape as the wish endpoint,
+  // unpaginated): Booth records item-page visits natively, and vrcatalogue
+  // modal opens hit items/<id>.json with cookies, which Booth records too.
+  // Logged out it returns 200 + [] — indistinguishable from an empty
+  // history, so login state comes from the wish endpoint's 401 instead
+  // (wishData.loggedOut). No local copy is kept.
+  const histData = { list: [], ids: new Set() };
+  let historyPromise = null;
+  function getHistory(fresh) {
+    if (!historyPromise || fresh) {
+      const p = fetchJson("https://booth.pm/history.json")
+        .then(({ status, json }) => {
+          if (status !== 200 || !Array.isArray(json)) {
+            throw new Error(`history ${status}`);
+          }
+          histData.list = json.map(cardEntry);
+          histData.ids = new Set(histData.list.map((e) => e.id));
+          return histData;
+        })
+        .catch((e) => {
+          if (historyPromise === p) historyPromise = null;
+          throw e;
+        });
+      historyPromise = p;
+    }
+    return historyPromise;
   }
-  function pushHistory(entry) {
-    if (!canStore || !entry.id) return;
-    const title = entry.title || "";
-    const img = boothImgVariant(entry.img);
-    const price = entry.price || "";
-    const shop = entry.shop || "";
-    const list = readHistory();
-    // openModal re-logs the same item right after its seed log once the
-    // Booth fetch resolves — when that enrichment changed nothing, skip the
-    // synchronous list rewrite. Freshness guard so a genuine revisit hours
-    // later still refreshes the entry's timestamp.
-    const head = list[0];
-    if (
-      head &&
-      head.id === entry.id &&
-      head.title === title &&
-      head.img === img &&
-      (head.price || "") === price &&
-      (head.shop || "") === shop &&
-      Date.now() - head.t < 60e3
-    )
-      return;
-    const rest = list.filter((e) => e.id !== entry.id);
-    rest.unshift({ id: entry.id, title, img, price, shop, t: Date.now() });
-    gmWriteJson(HIST_KEY, rest.slice(0, HIST_MAX));
-  }
-  function clearHistory() {
-    if (canStore) gmWriteJson(HIST_KEY, []);
+  // Instant local echo for a view made this page load: the modal may serve
+  // the item from the 24h persistent cache without ever hitting Booth, so
+  // this is also the only "seen" signal for those.
+  function markSeen(id) {
+    histData.ids.add(String(id));
   }
 
   // Single source of truth for the two ways a search request can fail, so the
@@ -668,16 +671,10 @@
     if (!idMatch) return;
     const itemId = idMatch[1];
 
-    // Record the visit so the vrcatalogue "recently viewed" panel also covers
-    // items browsed directly on Booth. og: meta is server-rendered, so it's
-    // already present at document-idle even while React still fills the body.
+    // og: meta is server-rendered, so it's already present at document-idle
+    // even while React still fills the body.
     const ogMeta = (p) =>
       document.querySelector(`meta[property="og:${p}"]`)?.content || "";
-    pushHistory({
-      id: itemId,
-      title: (ogMeta("title") || document.title).replace(/\s*-\s*BOOTH$/, "").trim(),
-      img: ogMeta("image"),
-    });
 
     // Collapse the item description behind an expand button. On the generic
     // booth.pm/items template, the description body is the .my-40 wrapper
@@ -948,13 +945,8 @@
         display: flex; justify-content: space-between; align-items: center;
         margin-bottom: 14px; font-size: 15px; font-weight: 700; color: var(--text, #222);
       }
-      .bcs-hist-clear {
-        border: none; background: none; padding: 0; cursor: pointer;
-        font-size: 12px; font-weight: 600; color: var(--muted, #888); font-family: inherit;
-      }
-      .bcs-hist-clear:hover { color: var(--accent, #fc4d50); }
       .bcs-hist-filter {
-        flex: 1; min-width: 0; margin: 0 12px; padding: 4px 10px;
+        flex: 1; min-width: 0; margin-left: 12px; padding: 4px 10px;
         font-size: 12px; font-family: inherit; color: var(--text, #222);
         background: var(--item-hover, #f5f5f5); border: 1px solid var(--border, #ddd);
         border-radius: 6px; outline: none;
@@ -973,7 +965,6 @@
         word-break: break-word; min-height: 2.8em;
       }
       .bcs-hist-item:hover .ht { color: var(--accent, #fc4d50); }
-      .bcs-hist-item .hd { margin-top: 2px; font-size: 11px; color: var(--muted, #888); }
       .bcs-hist-item .hm {
         margin-top: 2px; font-size: 11px; color: var(--muted, #888);
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -1199,9 +1190,9 @@
       const overlay = document.createElement("div");
       overlay.className = "bcs-overlay";
       const boothUrl = `https://booth.pm/items/${seed.id}`;
-      // Log immediately with card-level data so the entry exists even if the
-      // Booth fetch fails (R18); re-logged with better title/image on success.
-      pushHistory({ id: seed.id, title: seed.title, img: seed.img });
+      // Booth records the view server-side (the item JSON fetch below carries
+      // cookies); mark it locally too so the veil updates without a refetch.
+      markSeen(seed.id);
       scheduleBadges();
       overlay.innerHTML = `
         <div class="bcs-modal" role="dialog" aria-modal="true">
@@ -1429,16 +1420,6 @@
           }
           showImage(0);
 
-          pushHistory({
-            id: seed.id,
-            title: item.name,
-            img: images.length
-              ? images[0].resized || images[0].original
-              : seed.img,
-            price: item.price || "",
-            shop: (item.shop && item.shop.name) || "",
-          });
-
           renderVariations(varEl, item.variations, item.price);
 
           const desc = [item.description, item.factory_description]
@@ -1519,6 +1500,23 @@
       );
     };
     subscribeWished();
+    // Same lazy-retry subscription for the seen set (server history).
+    let histLoaded = false;
+    let histFetch = false;
+    const subscribeHistory = () => {
+      if (histFetch) return;
+      histFetch = true;
+      getHistory().then(
+        () => {
+          histLoaded = true;
+          scheduleBadges();
+        },
+        () => {
+          histFetch = false; // retry from a later badge pass
+        },
+      );
+    };
+    subscribeHistory();
     let badgeQueued = false;
     function scheduleBadges() {
       if (badgeQueued) return;
@@ -1526,7 +1524,8 @@
       requestAnimationFrame(() => {
         badgeQueued = false;
         if (!wishedBadgeSet) subscribeWished();
-        const seen = new Set(readHistory().map((e) => String(e.id)));
+        if (!histLoaded) subscribeHistory();
+        const seen = histData.ids;
         document.querySelectorAll(".cardImgWrap").forEach((wrap) => {
           const card = wrap.closest("li") || wrap.parentElement;
           const link =
@@ -1566,22 +1565,12 @@
       modal.innerHTML = '<div class="bcs-hist-head"><span>最近看过</span></div>';
       overlay.appendChild(modal);
 
-      const clear = document.createElement("button");
-      clear.type = "button";
-      clear.className = "bcs-hist-clear";
-      clear.textContent = "清空";
-      clear.addEventListener("click", () => {
-        clearHistory();
-        render();
-      });
-      modal.firstElementChild.appendChild(clear);
-
       const filter = document.createElement("input");
       filter.type = "search";
       filter.className = "bcs-hist-filter";
       filter.placeholder = "筛选标题/店铺…";
       filter.addEventListener("input", () => applyFilter());
-      modal.firstElementChild.insertBefore(filter, clear);
+      modal.firstElementChild.appendChild(filter);
 
       const applyFilter = () => {
         const q = filter.value.trim().toLowerCase();
@@ -1594,8 +1583,9 @@
 
       let wished = null; // Set<string> once resolved; null = unknown/hidden
       let wishInfo = null; // Map<id, {id,title,img,price,shop}> from the endpoint
-      // fresh: likes made on booth.pm since page load should show up on
-      // reopen, same as history (which re-reads storage every render).
+      let histState = "loading"; // "loading" | "ok" | "fail"
+      // fresh: both lists live on Booth's servers now — refetch on every
+      // open so likes/views made on booth.pm show up without a page reload.
       getWishList(true)
         .then((w) => {
           wished = w.ids;
@@ -1603,9 +1593,19 @@
           render();
           scheduleBadges(); // card ★s may have changed too
         })
-        .catch(() => {});
+        .catch(() => render());
+      getHistory(true)
+        .then(() => {
+          histState = "ok";
+          render();
+          scheduleBadges();
+        })
+        .catch(() => {
+          histState = "fail";
+          render();
+        });
 
-      // One tile for either section. `entry` needs {id,title,img,price,shop,t?}.
+      // One tile for either section. `entry` needs {id,title,img,price,shop}.
       const makeTile = (entry) => {
         const item = document.createElement("button");
         item.type = "button";
@@ -1630,12 +1630,6 @@
         meta.textContent = [entry.shop, entry.price].filter(Boolean).join(" · ");
         meta.hidden = !meta.textContent;
         item.append(thumb, title, meta);
-        if (entry.t) {
-          const date = document.createElement("div");
-          date.className = "hd";
-          date.textContent = formatDate(entry.t);
-          item.appendChild(date);
-        }
         if (wished) {
           const star = document.createElement("span");
           star.className = `bcs-hist-star${wished.has(String(entry.id)) ? " on" : ""}`;
@@ -1678,8 +1672,18 @@
         modal
           .querySelectorAll(".bcs-hist-grid, .bcs-hist-empty, .bcs-hist-sub, .bcs-toggle")
           .forEach((el) => el.remove());
-        const list = readHistory();
-        clear.hidden = !list.length;
+        const list = histData.list;
+
+        // Both lists need a Booth session; the wish endpoint's 401 is the
+        // only reliable logged-out signal (history.json returns [] either
+        // way), so one hint replaces both sections.
+        if (wishData.loggedOut) {
+          const empty = document.createElement("div");
+          empty.className = "bcs-hist-empty";
+          empty.textContent = "未登录 Booth — 登录后这里会显示最近看过与收藏";
+          modal.appendChild(empty);
+          return;
+        }
 
         // 收藏 strip: ids straight from the wish set (newest-first as the
         // endpoint returned them). Tile data comes with the wish response
@@ -1730,7 +1734,12 @@
         if (!list.length) {
           const empty = document.createElement("div");
           empty.className = "bcs-hist-empty";
-          empty.textContent = "暂无浏览记录";
+          empty.textContent =
+            histState === "loading"
+              ? "加载中…"
+              : histState === "fail"
+                ? "历史加载失败，稍后再试"
+                : "暂无浏览记录";
           modal.appendChild(empty);
           applyFilter();
           return;
@@ -1744,19 +1753,17 @@
       render();
     }
 
-    // No storage grant → nothing ever gets recorded, so don't show an entry
-    // point to a permanently empty list.
-    if (canStore) {
-      const fab = document.createElement("button");
-      fab.type = "button";
-      fab.className = "bcs-hist-fab";
-      fab.title = "最近看过";
-      fab.setAttribute("aria-label", "最近看过");
-      fab.innerHTML =
-        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15.5 14"></polyline></svg>';
-      fab.addEventListener("click", openHistory);
-      document.body.appendChild(fab);
-    }
+    // History lives on Booth's servers now, so the entry point needs no
+    // storage grant; logged out, the panel shows its own login hint.
+    const fab = document.createElement("button");
+    fab.type = "button";
+    fab.className = "bcs-hist-fab";
+    fab.title = "最近看过";
+    fab.setAttribute("aria-label", "最近看过");
+    fab.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15.5 14"></polyline></svg>';
+    fab.addEventListener("click", openHistory);
+    document.body.appendChild(fab);
   }
 
   // ---------------------------------------------------------------- entry
