@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.10.1
+// @version      2.10.2
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -945,13 +945,35 @@
         display: flex; justify-content: space-between; align-items: center;
         margin-bottom: 14px; font-size: 15px; font-weight: 700; color: var(--text, #222);
       }
+      .bcs-filter-wrap { position: relative; flex: 1; min-width: 0; margin-left: 12px; }
       .bcs-hist-filter {
-        flex: 1; min-width: 0; margin-left: 12px; padding: 4px 10px;
+        width: 100%; box-sizing: border-box; padding: 4px 10px;
         font-size: 12px; font-family: inherit; color: var(--text, #222);
         background: var(--item-hover, #f5f5f5); border: 1px solid var(--border, #ddd);
         border-radius: 6px; outline: none;
       }
       .bcs-hist-filter:focus { border-color: var(--accent, #fc4d50); }
+      .bcs-filter-drop {
+        position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 10;
+        background: var(--panel, #fff); border: 1px solid var(--border, #ddd);
+        border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.18);
+        max-height: 240px; overflow-y: auto; padding: 4px;
+      }
+      .bcs-filter-drop[hidden] { display: none; }
+      .bcs-filter-row {
+        display: flex; align-items: center; gap: 6px; padding: 5px 8px;
+        border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text, #222);
+      }
+      .bcs-filter-row:hover { background: var(--item-hover, #f5f5f5); }
+      .bcs-filter-row .q {
+        flex: 1; min-width: 0; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap;
+      }
+      .bcs-filter-del {
+        border: none; background: none; cursor: pointer; padding: 0 2px;
+        font-size: 13px; line-height: 1; font-family: inherit; color: var(--muted, #999);
+      }
+      .bcs-filter-del:hover { color: var(--accent, #fc4d50); }
       .bcs-hist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; align-items: start; }
       .bcs-hist-item { border: none; background: none; padding: 0; cursor: pointer; text-align: left; font-family: inherit; }
       .bcs-hist-thumb { position: relative; }
@@ -1565,17 +1587,19 @@
       modal.innerHTML = '<div class="bcs-hist-head"><span>最近看过</span></div>';
       overlay.appendChild(modal);
 
+      const filterWrap = document.createElement("div");
+      filterWrap.className = "bcs-filter-wrap";
       const filter = document.createElement("input");
       filter.type = "search";
       filter.className = "bcs-hist-filter";
       filter.placeholder = "筛选标题/店铺…";
-      filter.addEventListener("input", () => applyFilter());
-      modal.firstElementChild.appendChild(filter);
+      filterWrap.appendChild(filter);
+      modal.firstElementChild.appendChild(filterWrap);
 
-      // Past filter queries (GM-stored, deduped, capped) surface as a native
-      // datalist dropdown on click/focus; picking one fires "input" so the
-      // filter applies. Saved on Enter and when a query leads to a tile
-      // click — not per keystroke. No-ops without storage grants.
+      // Past filter queries (GM-stored, deduped, capped) show in a custom
+      // dropdown on focus, each row with a ✕ to forget it. Saved after the
+      // user pauses typing (plus immediately on Enter or a tile click), so
+      // prefixes don't pile up per keystroke. No-ops without storage grants.
       const FILTER_HIST_KEY = "bcs-filter-history";
       const readFilterHist = () => {
         const list = canStore ? gmReadJson(FILTER_HIST_KEY, []) : [];
@@ -1589,24 +1613,61 @@
           [q, ...readFilterHist().filter((s) => s !== q)].slice(0, 10),
         );
       };
-      const dl = document.createElement("datalist");
-      dl.id = "bcs-filter-hist";
-      const syncFilterHist = () => {
-        dl.innerHTML = "";
-        for (const q of readFilterHist()) {
-          const o = document.createElement("option");
-          o.value = q;
-          dl.appendChild(o);
+      const drop = document.createElement("div");
+      drop.className = "bcs-filter-drop";
+      drop.hidden = true;
+      filterWrap.appendChild(drop);
+      const renderDrop = () => {
+        const list = readFilterHist();
+        drop.innerHTML = "";
+        drop.hidden = !list.length;
+        for (const q of list) {
+          const row = document.createElement("div");
+          row.className = "bcs-filter-row";
+          const text = document.createElement("span");
+          text.className = "q";
+          text.textContent = q;
+          const del = document.createElement("button");
+          del.type = "button";
+          del.className = "bcs-filter-del";
+          del.setAttribute("aria-label", "删除搜索记录");
+          del.textContent = "✕";
+          del.addEventListener("click", (e) => {
+            e.stopPropagation();
+            gmWriteJson(FILTER_HIST_KEY, readFilterHist().filter((s) => s !== q));
+            renderDrop(); // hides itself when the list empties
+          });
+          row.addEventListener("click", () => {
+            filter.value = q;
+            saveFilterHist(q); // bump to front
+            applyFilter();
+            drop.hidden = true;
+          });
+          row.append(text, del);
+          drop.appendChild(row);
         }
       };
-      syncFilterHist();
-      modal.appendChild(dl);
-      filter.setAttribute("list", dl.id);
+      filter.addEventListener("focus", renderDrop);
+      filter.addEventListener("click", renderDrop);
+      let saveTimer = 0;
+      filter.addEventListener("input", () => {
+        applyFilter();
+        drop.hidden = true;
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => saveFilterHist(filter.value), 1200);
+      });
       filter.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
+          clearTimeout(saveTimer);
           saveFilterHist(filter.value);
-          syncFilterHist();
+        } else if (e.key === "Escape" && !drop.hidden) {
+          // Swallow: close just the dropdown, not the whole panel.
+          e.stopPropagation();
+          drop.hidden = true;
         }
+      });
+      overlay.addEventListener("mousedown", (e) => {
+        if (!filterWrap.contains(e.target)) drop.hidden = true;
       });
 
       const applyFilter = () => {
