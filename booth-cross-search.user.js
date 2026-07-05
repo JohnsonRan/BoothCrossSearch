@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.10.2
+// @version      2.11.6
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -222,10 +222,13 @@
     return csrfPromise;
   }
 
-  function setWished(itemId, on) {
+  // Authenticated Booth write with the standard Rails dance: CSRF header,
+  // and one refresh-and-retry on 422 (stale token / no session).
+  function boothWrite(url, method) {
+    const ok = (res) => res.status >= 200 && res.status < 300;
     const send = (token) =>
-      gmGet(`https://booth.pm/items/${itemId}/wish_list.json`, {
-        method: on ? "POST" : "DELETE",
+      gmGet(url, {
+        method,
         headers: {
           "X-CSRF-Token": token,
           Accept: "application/json",
@@ -235,22 +238,28 @@
     return getCsrfToken()
       .then(send)
       .then((res) => {
-        if (res.status >= 200 && res.status < 300) return;
-        if (res.status !== 422) throw new Error(`wish_list ${res.status}`);
+        if (ok(res)) return;
+        if (res.status !== 422) throw new Error(`${method} ${url}: ${res.status}`);
         return getCsrfToken(true)
           .then(send)
           .then((res2) => {
-            if (res2.status < 200 || res2.status >= 300) {
-              throw new Error(`wish_list ${res2.status}`);
+            if (!ok(res2)) {
+              throw new Error(`${method} ${url}: ${res2.status}`);
             }
           });
-      })
-      .then(() =>
-        getWishedIds().then((set) => {
-          if (on) set.add(String(itemId));
-          else set.delete(String(itemId));
-        }),
-      );
+      });
+  }
+
+  function setWished(itemId, on) {
+    return boothWrite(
+      `https://booth.pm/items/${itemId}/wish_list.json`,
+      on ? "POST" : "DELETE",
+    ).then(() =>
+      getWishedIds().then((set) => {
+        if (on) set.add(String(itemId));
+        else set.delete(String(itemId));
+      }),
+    );
   }
 
   // GM value storage may be missing entirely (manager without the grant, or
@@ -427,6 +436,25 @@
   function markSeen(id) {
     histData.ids.add(String(id));
   }
+  // Server-side wipe: DELETE on the same endpoint empties Booth's history
+  // for the whole account (irreversible). A successful clear answers with
+  // a 302 to booth.pm/history that GM_xmlhttpRequest doesn't follow
+  // cleanly (onload fires with status 0), so boothWrite rejects even on
+  // success — the catch refetches and lets the server's actual list
+  // decide. Local mirrors are cleared so the panel and card veils react
+  // without waiting on another fetch.
+  function clearHistory() {
+    return boothWrite("https://booth.pm/history.json", "DELETE")
+      .catch((e) =>
+        getHistory(true).then((h) => {
+          if (h.list.length) throw e; // genuinely not cleared
+        }),
+      )
+      .then(() => {
+        histData.list = [];
+        histData.ids = new Set();
+      });
+  }
 
   // Single source of truth for the two ways a search request can fail, so the
   // click handler and autoCheck don't each re-derive (and drift on) the copy.
@@ -482,11 +510,12 @@
     bar.className = "bcs-bar";
 
     // Paint a lookup result onto a button: green/red status dot plus the
-    // count badge next to the label — hidden at 0 (the red dot already says
-    // "none"; a "0" pill would just repeat it).
+    // count badge next to the label — shown only for 2+ results (at 0 the
+    // red dot already says "none", and a lone "1" repeats the green dot;
+    // VRCPirate in practice never exceeds one match, so its badge stays off).
     const setResult = (dot, cnt, n) => {
       dot.className = `dot ${n ? "ok" : "none"}`;
-      cnt.hidden = !n;
+      cnt.hidden = n < 2;
       cnt.textContent = n;
     };
 
@@ -974,6 +1003,16 @@
         font-size: 13px; line-height: 1; font-family: inherit; color: var(--muted, #999);
       }
       .bcs-filter-del:hover { color: var(--accent, #fc4d50); }
+      .bcs-hist-clear {
+        flex: none; margin-left: 10px; padding: 4px 10px; white-space: nowrap;
+        font-size: 12px; font-weight: 400; font-family: inherit; cursor: pointer;
+        color: var(--muted, #888); background: var(--item-hover, #f5f5f5);
+        border: 1px solid var(--border, #ddd); border-radius: 6px;
+        transition: color .15s, border-color .15s, background .15s;
+      }
+      .bcs-hist-clear:hover { color: var(--accent, #fc4d50); border-color: var(--accent, #fc4d50); }
+      .bcs-hist-clear.armed { color: #fff; background: var(--accent, #fc4d50); border-color: var(--accent, #fc4d50); }
+      .bcs-hist-clear[disabled] { opacity: .6; cursor: default; }
       .bcs-hist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; align-items: start; }
       .bcs-hist-item { border: none; background: none; padding: 0; cursor: pointer; text-align: left; font-family: inherit; }
       .bcs-hist-thumb { position: relative; }
@@ -996,6 +1035,7 @@
         margin: 14px 0 8px; font-size: 12px; font-weight: 700;
         color: var(--muted, #888);
       }
+      .bcs-hist-sub-row { display: flex; align-items: center; justify-content: space-between; }
       .bcs-hist-star {
         position: absolute; top: 6px; right: 6px; width: 22px; height: 22px;
         display: flex; align-items: center; justify-content: center;
@@ -1596,6 +1636,56 @@
       filterWrap.appendChild(filter);
       modal.firstElementChild.appendChild(filterWrap);
 
+      // Clear-all for the server-side history. Destructive and irreversible
+      // (wipes the whole account's viewed list on Booth, not just this
+      // panel), so it arms on first click and only fires on a second click
+      // within 3s. Lives in the 最近 section header (render() re-appends it
+      // there) so its blast radius reads as that list only, not the wish
+      // strip; render() appends it only when the list is non-empty.
+      const clearBtn = document.createElement("button");
+      clearBtn.type = "button";
+      clearBtn.className = "bcs-hist-clear";
+      const CLEAR_LABEL = "清空记录";
+      clearBtn.textContent = CLEAR_LABEL;
+      let armTimer = 0;
+      const disarm = () => {
+        clearTimeout(armTimer);
+        clearBtn.classList.remove("armed");
+        clearBtn.textContent = CLEAR_LABEL;
+      };
+      const scheduleDisarm = () => {
+        clearTimeout(armTimer);
+        armTimer = setTimeout(disarm, 3000);
+      };
+      clearBtn.addEventListener("click", () => {
+        if (clearBtn.disabled) return;
+        if (!clearBtn.classList.contains("armed")) {
+          clearBtn.classList.add("armed");
+          clearBtn.textContent = "确认清空？";
+          scheduleDisarm();
+          return;
+        }
+        clearTimeout(armTimer);
+        clearBtn.disabled = true;
+        clearBtn.textContent = "清空中…";
+        clearHistory()
+          .then(
+            () => {
+              disarm();
+              render(); // shows 暂无浏览记录, drops the button
+              scheduleBadges(); // card veils come off
+            },
+            () => {
+              clearBtn.classList.remove("armed");
+              clearBtn.textContent = "清空失败";
+              scheduleDisarm();
+            },
+          )
+          .finally(() => {
+            clearBtn.disabled = false;
+          });
+      });
+
       // Past filter queries (GM-stored, deduped, capped) show in a custom
       // dropdown on focus, each row with a ✕ to forget it. Saved after the
       // user pauses typing (plus immediately on Enter or a tile click), so
@@ -1773,6 +1863,7 @@
           .querySelectorAll(".bcs-hist-grid, .bcs-hist-empty, .bcs-hist-sub, .bcs-toggle")
           .forEach((el) => el.remove());
         const list = histData.list;
+        const hasWish = !!(wished && wished.size);
 
         // Both lists need a Booth session; the wish endpoint's 401 is the
         // only reliable logged-out signal (history.json returns [] either
@@ -1789,7 +1880,7 @@
         // endpoint returned them). Tile data comes with the wish response
         // itself (falling back to the history entry for an id just starred
         // this page load, which the memoized response doesn't know about).
-        if (wished && wished.size) {
+        if (hasWish) {
           const byId = new Map(list.map((e) => [String(e.id), e]));
           const sub = document.createElement("div");
           sub.className = "bcs-hist-sub";
@@ -1825,9 +1916,19 @@
             });
             wgrid.insertAdjacentElement("afterend", toggle);
           }
+        }
+
+        // 最近 header row also hosts the clear button (re-appended each
+        // render — the node persists so its armed/disabled state survives;
+        // appending only on a non-empty list is what hides it otherwise).
+        // Header only when there is something to separate or clear.
+        if (hasWish || list.length) {
           const sub2 = document.createElement("div");
-          sub2.className = "bcs-hist-sub";
-          sub2.textContent = "最近";
+          sub2.className = "bcs-hist-sub bcs-hist-sub-row";
+          const label = document.createElement("span");
+          label.textContent = "最近";
+          sub2.append(label);
+          if (list.length) sub2.append(clearBtn);
           modal.appendChild(sub2);
         }
 
