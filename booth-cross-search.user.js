@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.9.4
+// @version      2.9.5
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -131,24 +131,38 @@
 
   // ---- Booth wish list ("スキ!") sync. Booth is the single source of
   // truth: star state everywhere = membership in the id set from
-  // wish_list_name_items.json, fetched once per page load (paginated,
-  // 20/page — pages are walked to a sanity cap; GM_xmlhttpRequest sends the
-  // user's booth cookies). The response carries full item cards, kept in
-  // `byId` so the panel's wish strip needs no per-item fetches. Logged out
-  // the endpoint 401s — resolved as an empty list so stars just render
-  // unfilled. Endpoints are private — if Booth changes them only the star
-  // feature degrades; search and history are unaffected.
+  // wish_list_name_items.json (paginated, 20/page — pages are walked to a
+  // sanity cap; GM_xmlhttpRequest sends the user's booth cookies), fetched
+  // lazily and re-walked when the history panel opens. The response carries
+  // full item cards, kept in `byId` so the panel's wish strip needs no
+  // per-item fetches. Logged out the endpoint 401s — resolved as an empty
+  // list so stars just render unfilled. Endpoints are private — if Booth
+  // changes them only the star feature degrades; search and history are
+  // unaffected.
   const WISH_PAGE_CAP = 25;
+  // Stable container, mutated in place by every (re)fetch and by setWished:
+  // everything holding a reference (badge pass, open modal, panel closures)
+  // sees fresh data without re-subscribing. Pass fresh=true to re-walk the
+  // endpoint (the history panel does, so likes made on booth.pm show up
+  // without a page reload); a failed refresh keeps the previous contents.
+  const wishData = { ids: new Set(), byId: new Map() };
   let wishListPromise = null;
-  function getWishList() {
-    if (!wishListPromise) {
+  function getWishList(fresh) {
+    if (!wishListPromise || fresh) {
       const ids = new Set();
       const byId = new Map();
+      const done = () => {
+        wishData.ids.clear();
+        wishData.byId.clear();
+        ids.forEach((id) => wishData.ids.add(id));
+        byId.forEach((v, k) => wishData.byId.set(k, v));
+        return wishData;
+      };
       const fetchPage = (page) =>
         fetchJson(
           `https://accounts.booth.pm/wish_list_name_items.json?page=${page}`,
         ).then(({ status, json }) => {
-          if (status === 401) return { ids, byId }; // logged out
+          if (status === 401) return done(); // logged out -> empty
           if (status !== 200 || !json || !Array.isArray(json.items)) {
             throw new Error(`wish_list_name_items ${status}`);
           }
@@ -165,12 +179,13 @@
           }
           const next = json.pagination && json.pagination.next_page;
           if (next && next <= WISH_PAGE_CAP) return fetchPage(next);
-          return { ids, byId };
+          return done();
         });
-      wishListPromise = fetchPage(1).catch((e) => {
-        wishListPromise = null;
+      const p = fetchPage(1).catch((e) => {
+        if (wishListPromise === p) wishListPromise = null;
         throw e;
       });
+      wishListPromise = p;
     }
     return wishListPromise;
   }
@@ -1579,11 +1594,14 @@
 
       let wished = null; // Set<string> once resolved; null = unknown/hidden
       let wishInfo = null; // Map<id, {id,title,img,price,shop}> from the endpoint
-      getWishList()
+      // fresh: likes made on booth.pm since page load should show up on
+      // reopen, same as history (which re-reads storage every render).
+      getWishList(true)
         .then((w) => {
           wished = w.ids;
           wishInfo = w.byId;
           render();
+          scheduleBadges(); // card ★s may have changed too
         })
         .catch(() => {});
 
