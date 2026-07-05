@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.9.1
+// @version      2.9.2
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -130,27 +130,52 @@
   }
 
   // ---- Booth wish list ("スキ!") sync. Booth is the single source of
-  // truth: star state everywhere = membership in this id set, fetched once
-  // per page load (GM_xmlhttpRequest sends the user's booth cookies; logged
-  // out the endpoint returns an empty list with HTTP 200, so stars simply
-  // render unfilled). Endpoints are private — if Booth changes them only
-  // the star feature degrades; search and history are unaffected.
-  let wishedIdsPromise = null;
-  function getWishedIds() {
-    if (!wishedIdsPromise) {
-      wishedIdsPromise = fetchJson("https://accounts.booth.pm/wish_lists.json")
-        .then(({ status, json }) => {
-          if (status !== 200 || !json || !Array.isArray(json.item_ids)) {
-            throw new Error(`wish_lists ${status}`);
+  // truth: star state everywhere = membership in the id set from
+  // wish_list_name_items.json, fetched once per page load (paginated,
+  // 20/page — pages are walked to a sanity cap; GM_xmlhttpRequest sends the
+  // user's booth cookies). The response carries full item cards, kept in
+  // `byId` so the panel's wish strip needs no per-item fetches. Logged out
+  // the endpoint 401s — resolved as an empty list so stars just render
+  // unfilled. Endpoints are private — if Booth changes them only the star
+  // feature degrades; search and history are unaffected.
+  const WISH_PAGE_CAP = 25;
+  let wishListPromise = null;
+  function getWishList() {
+    if (!wishListPromise) {
+      const ids = new Set();
+      const byId = new Map();
+      const fetchPage = (page) =>
+        fetchJson(
+          `https://accounts.booth.pm/wish_list_name_items.json?page=${page}`,
+        ).then(({ status, json }) => {
+          if (status === 401) return { ids, byId }; // logged out
+          if (status !== 200 || !json || !Array.isArray(json.items)) {
+            throw new Error(`wish_list_name_items ${status}`);
           }
-          return new Set(json.item_ids.map(String));
-        })
-        .catch((e) => {
-          wishedIdsPromise = null;
-          throw e;
+          for (const it of json.items) {
+            const id = String(it.id);
+            ids.add(id);
+            byId.set(id, {
+              id,
+              title: it.name || "",
+              img: (it.thumbnail_image_urls && it.thumbnail_image_urls[0]) || "",
+              price: it.price || "",
+              shop: (it.shop && it.shop.name) || "",
+            });
+          }
+          const next = json.pagination && json.pagination.next_page;
+          if (next && next <= WISH_PAGE_CAP) return fetchPage(next);
+          return { ids, byId };
         });
+      wishListPromise = fetchPage(1).catch((e) => {
+        wishListPromise = null;
+        throw e;
+      });
     }
-    return wishedIdsPromise;
+    return wishListPromise;
+  }
+  function getWishedIds() {
+    return getWishList().then((w) => w.ids);
   }
 
   // Rails CSRF token, scraped from any booth.pm page and memoized. A 422 on
@@ -1544,9 +1569,11 @@
       openOverlay(overlay);
 
       let wished = null; // Set<string> once resolved; null = unknown/hidden
-      getWishedIds()
-        .then((set) => {
-          wished = set;
+      let wishInfo = null; // Map<id, {id,title,img,price,shop}> from the endpoint
+      getWishList()
+        .then((w) => {
+          wished = w.ids;
+          wishInfo = w.byId;
           render();
         })
         .catch(() => {});
@@ -1627,11 +1654,10 @@
         const list = readHistory();
         clear.hidden = !list.length;
 
-        // 收藏 strip: ids straight from the wish set (insertion order as the
-        // endpoint returned them). Tile data comes from history when known,
-        // else a placeholder hydrated by the cached item JSON; hydration
-        // failure (R18, deleted) leaves the placeholder — clicking it still
-        // opens the modal, which shows its own login hint.
+        // 收藏 strip: ids straight from the wish set (newest-first as the
+        // endpoint returned them). Tile data comes with the wish response
+        // itself (falling back to the history entry for an id just starred
+        // this page load, which the memoized response doesn't know about).
         if (wished && wished.size) {
           const byId = new Map(list.map((e) => [String(e.id), e]));
           const sub = document.createElement("div");
@@ -1641,25 +1667,9 @@
           const wgrid = document.createElement("div");
           wgrid.className = "bcs-hist-grid";
           const tiles = [...wished].map((id) => {
-            const known = byId.get(id);
-            const tile = makeTile(known || { id, title: "", img: "" });
-            if (!known) {
-              getBoothItem(id).then(
-                (item) => {
-                  tile.querySelector(".ht").textContent = item.name;
-                  tile.dataset.ft = `${item.name} ${(item.shop && item.shop.name) || ""}`.toLowerCase();
-                  const im = item.images && item.images[0];
-                  if (im) {
-                    tile.querySelector("img").src = boothImgVariant(
-                      im.resized || im.original,
-                      HIST_IMG_SPEC,
-                    );
-                  }
-                  applyFilter();
-                },
-                () => {},
-              );
-            }
+            const known =
+              (wishInfo && wishInfo.get(id)) || byId.get(id) || { id, title: "", img: "" };
+            const tile = makeTile(known);
             wgrid.appendChild(tile);
             return tile;
           });

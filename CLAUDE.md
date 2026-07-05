@@ -96,8 +96,12 @@ UI for it: a fixed corner button (`.bcs-hist-fab`, hidden without storage grants
 panel whose entries reopen the product modal.
 
 A star on the vrcatalogue modal and history tiles syncs with the user's real Booth
-wish list ("スキ!"): state is one id-set fetch per page load
-(`accounts.booth.pm/wish_lists.json`, empty-but-200 when logged out), writes go to
+wish list ("スキ!"): state is one paginated fetch per page load of
+`accounts.booth.pm/wish_list_name_items.json` (20 items/page, walked to a cap; 401
+when logged out is resolved as an empty list so stars just render unfilled). Note
+the similarly-named `wish_lists.json` is a decoy — it returns `{"item_ids":[]}` even
+when logged in. The response carries full item cards (name/price/shop/thumbnail),
+which the panel's 收藏 strip renders directly with no per-item fetches. Writes go to
 `booth.pm/items/<id>/wish_list.json` with a scraped CSRF token (422 → re-scrape,
 retry once). There is no local pin storage — Booth is the source of truth — and the
 item JSON's `wished` field is deliberately NOT persisted (24h cache would go stale).
