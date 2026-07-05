@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.11.6
+// @version      2.12.0
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -1036,22 +1036,27 @@
         color: var(--muted, #888);
       }
       .bcs-hist-sub-row { display: flex; align-items: center; justify-content: space-between; }
-      .bcs-hist-star {
+      /* Wish-toggle star shared by history thumbs and product cards:
+         hover-revealed when off, constant gold when on. */
+      .bcs-tile-star {
         position: absolute; top: 6px; right: 6px; width: 22px; height: 22px;
         display: flex; align-items: center; justify-content: center;
+        border: none; padding: 0; z-index: 5;
         border-radius: 50%; background: var(--panel, #fff); color: var(--muted, #999);
         box-shadow: 0 1px 4px rgba(0,0,0,.2); cursor: pointer;
         opacity: 0; transition: opacity .12s, color .15s;
       }
-      .bcs-hist-item:hover .bcs-hist-star { opacity: 1; }
-      .bcs-hist-star.on { opacity: 1; color: #f5a623; }
-      .bcs-hist-star svg { width: 14px; height: 14px; }
+      .bcs-tile-star[hidden] { display: none; }
+      .bcs-hist-item:hover .bcs-tile-star,
+      .cardImgWrap:hover .bcs-tile-star { opacity: 1; }
+      .bcs-tile-star.on { opacity: 1; color: #f5a623; }
+      .bcs-tile-star svg { width: 14px; height: 14px; }
       @media (max-width: 640px) {
         .bcs-modal-top { flex-direction: column; }
         .bcs-media { flex: none; width: 100%; }
       }
       .cardImgWrap { position: relative; }
-      /* Seen = grey veil over the image; sits under the ★ badge. */
+      /* Seen = grey veil over the image; sits under the chip and star. */
       .cardImgWrap.bcs-seen::after {
         content: ""; position: absolute; inset: 0; z-index: 4;
         background: rgba(90, 90, 90, .55); pointer-events: none;
@@ -1066,7 +1071,6 @@
         background: rgba(0,0,0,.72); color: #fff; backdrop-filter: blur(2px);
         box-shadow: 0 1px 4px rgba(0,0,0,.35); letter-spacing: .5px;
       }
-      .bcs-badge-wish { background: #f5a623; }
     `);
 
     const TAG_SHOW = 8;
@@ -1540,11 +1544,42 @@
       true,
     );
 
-    // 已看/★ chips on product cards. The SPA re-renders freely, so a
+    // Wish-toggle star shared by history tiles and product cards: optimistic
+    // .on flip, setWished, revert + hint on failure. `tag` is "span" inside a
+    // history tile (the tile itself is a <button>; buttons don't nest) and
+    // "button" on cards (the card click interceptor lets buttons through).
+    // The item id rides on dataset so a badge pass can re-point a recycled
+    // card's star without rebuilding it.
+    function makeTileStar(id, tag, onDone) {
+      const star = document.createElement(tag);
+      if (tag === "button") star.type = "button";
+      star.className = "bcs-tile-star";
+      star.dataset.id = id;
+      star.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
+      star.addEventListener("click", (e) => {
+        // Neither the site's delegated handlers nor the card interceptor
+        // should react to a star click.
+        e.preventDefault();
+        e.stopPropagation();
+        const on = !star.classList.contains("on");
+        star.classList.toggle("on", on);
+        setWished(star.dataset.id, on).then(
+          () => onDone && onDone(),
+          () => {
+            star.classList.toggle("on", !on);
+            star.title = "收藏失败（需登录 Booth？）";
+          },
+        );
+      });
+      return star;
+    }
+
+    // 已看 chip + wish star on product cards. The SPA re-renders freely, so a
     // body-level MutationObserver re-runs the pass (rAF-debounced: a burst
     // of mutations = one pass). The badge container's presence doubles as
     // the per-card "already processed" marker; hidden-toggles keep state
-    // fresh without re-creating nodes. ★ waits for the wish set; 已看
+    // fresh without re-creating nodes. The star waits for the wish set; 已看
     // renders regardless.
     let wishedBadgeSet = null;
     let wishedBadgeFetch = false;
@@ -1598,15 +1633,27 @@
           if (!box) {
             box = document.createElement("div");
             box.className = "bcs-badges";
-            box.innerHTML =
-              '<span class="bcs-badge">已看</span><span class="bcs-badge bcs-badge-wish">★</span>';
+            box.innerHTML = '<span class="bcs-badge">已看</span>';
             wrap.appendChild(box);
           }
+          let star = wrap.querySelector(".bcs-tile-star");
+          if (!star) {
+            star = makeTileStar(m[1], "button", scheduleBadges);
+            wrap.appendChild(star);
+          }
+          star.dataset.id = m[1]; // the SPA may recycle the wrap for another item
           // Seen = grey veil over the whole image (class + ::after) plus the
           // chip — the veil reads at grid-scan distance, the chip labels why.
           wrap.classList.toggle("bcs-seen", seen.has(m[1]));
           box.children[0].hidden = !seen.has(m[1]);
-          box.children[1].hidden = !(wishedBadgeSet && wishedBadgeSet.has(m[1]));
+          // The star doubles as the wished indicator: hidden until the wish
+          // set resolves (same rule as the modal star), then constant gold
+          // when wished, hover-revealed when not.
+          star.hidden = !wishedBadgeSet;
+          star.classList.toggle(
+            "on",
+            !!(wishedBadgeSet && wishedBadgeSet.has(m[1])),
+          );
         });
       });
     }
@@ -1819,25 +1866,11 @@
         meta.hidden = !meta.textContent;
         item.append(thumb, title, meta);
         if (wished) {
-          const star = document.createElement("span");
-          star.className = `bcs-hist-star${wished.has(String(entry.id)) ? " on" : ""}`;
-          star.innerHTML =
-            '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
-          star.addEventListener("click", (e) => {
-            e.stopPropagation();
-            const on = !star.classList.contains("on");
-            star.classList.toggle("on", on);
-            setWished(entry.id, on).then(
-              () => {
-                render(); // moves the tile between sections
-                scheduleBadges();
-              },
-              () => {
-                star.classList.toggle("on", !on);
-                star.title = "收藏失败（需登录 Booth？）";
-              },
-            );
+          const star = makeTileStar(entry.id, "span", () => {
+            render(); // moves the tile between sections
+            scheduleBadges();
           });
+          star.classList.toggle("on", wished.has(String(entry.id)));
           thumb.appendChild(star);
         }
         item.addEventListener("click", () => {

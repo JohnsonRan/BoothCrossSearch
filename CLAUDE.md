@@ -104,8 +104,8 @@ with a 302 that `GM_xmlhttpRequest` doesn't follow cleanly (onload with status 0
 `clearHistory` treats every non-2xx as ambiguous and verifies by refetching the list —
 empty means cleared.
 
-A star on the vrcatalogue modal and history tiles syncs with the user's real Booth
-wish list ("スキ!"): state is a paginated fetch of
+A star on the vrcatalogue modal, history tiles, and product cards syncs with the user's
+real Booth wish list ("スキ!"): state is a paginated fetch of
 `accounts.booth.pm/wish_list_name_items.json` (20 items/page, walked to a cap; 401
 when logged out is resolved as an empty list so stars just render unfilled),
 memoized into a stable in-place-mutated container and re-walked each time the
@@ -118,8 +118,12 @@ helper (scraped CSRF token, 422 → re-scrape and retry once) that history clear
 uses. There is no local pin storage — Booth is the source of truth — and the
 item JSON's `wished` field is deliberately NOT persisted (24h cache would go stale).
 Product cards are marked by a rAF-debounced MutationObserver pass: seen items get a
-grey veil over the card image (`.bcs-seen` + `::after`) plus an 已看 chip, wished
-ones a ★ chip.
+grey veil over the card image (`.bcs-seen` + `::after`) plus an 已看 chip; each card
+also gets a clickable wish star (`makeTileStar`, shared with the history tiles —
+hover-revealed when off, constant gold when on, hidden until the wish set resolves).
+The star is a `<button>` so the card click interceptor lets it through, and its item
+id lives on `dataset.id` so a badge pass can re-point a recycled card without
+rebuilding the node.
 
 ### Constraints worth knowing
 
