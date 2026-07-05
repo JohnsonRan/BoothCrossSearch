@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.10.0
+// @version      2.10.1
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -1572,6 +1572,43 @@
       filter.addEventListener("input", () => applyFilter());
       modal.firstElementChild.appendChild(filter);
 
+      // Past filter queries (GM-stored, deduped, capped) surface as a native
+      // datalist dropdown on click/focus; picking one fires "input" so the
+      // filter applies. Saved on Enter and when a query leads to a tile
+      // click — not per keystroke. No-ops without storage grants.
+      const FILTER_HIST_KEY = "bcs-filter-history";
+      const readFilterHist = () => {
+        const list = canStore ? gmReadJson(FILTER_HIST_KEY, []) : [];
+        return Array.isArray(list) ? list : [];
+      };
+      const saveFilterHist = (raw) => {
+        const q = (raw || "").trim();
+        if (!canStore || !q) return;
+        gmWriteJson(
+          FILTER_HIST_KEY,
+          [q, ...readFilterHist().filter((s) => s !== q)].slice(0, 10),
+        );
+      };
+      const dl = document.createElement("datalist");
+      dl.id = "bcs-filter-hist";
+      const syncFilterHist = () => {
+        dl.innerHTML = "";
+        for (const q of readFilterHist()) {
+          const o = document.createElement("option");
+          o.value = q;
+          dl.appendChild(o);
+        }
+      };
+      syncFilterHist();
+      modal.appendChild(dl);
+      filter.setAttribute("list", dl.id);
+      filter.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          saveFilterHist(filter.value);
+          syncFilterHist();
+        }
+      });
+
       const applyFilter = () => {
         const q = filter.value.trim().toLowerCase();
         modal.querySelectorAll(".bcs-hist-item").forEach((el) => {
@@ -1653,6 +1690,8 @@
           thumb.appendChild(star);
         }
         item.addEventListener("click", () => {
+          // A query that led to opening something earned a history slot.
+          saveFilterHist(filter.value);
           // Stack the product modal ON TOP of the history panel (the
           // overlay stack routes Escape/backdrop to the topmost), so
           // closing the modal returns to the list instead of the page.
