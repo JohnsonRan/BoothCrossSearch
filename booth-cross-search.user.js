@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.12.1
+// @version      2.12.2
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -97,7 +97,9 @@
 
   function formatDate(ts) {
     const d = new Date(ts);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${d.getFullYear()}-${month}-${day}`;
   }
 
   function makeLink(text, href, className) {
@@ -278,14 +280,14 @@
   function gmReadJson(key, fallback) {
     try {
       return JSON.parse(GM_getValue(key, "null")) ?? fallback;
-    } catch (e) {
+    } catch {
       return fallback;
     }
   }
   function gmWriteJson(key, value) {
     try {
       GM_setValue(key, JSON.stringify(value));
-    } catch (e) {
+    } catch {
       /* storage full/unavailable — degrade to memory-only */
     }
   }
@@ -336,25 +338,27 @@
   // successful results are persisted, so a cached "not-authorised" can never
   // outlive an actual login.
   function memoized(map, id, run, store) {
-    if (!map.has(id)) {
-      const hit = store && store.get(id);
-      map.set(
-        id,
-        hit !== undefined
-          ? Promise.resolve(hit)
-          : run().then(
-              (d) => {
-                if (store) store.set(id, d);
-                return d;
-              },
-              (e) => {
-                map.delete(id);
-                throw e;
-              },
-            ),
-      );
+    if (map.has(id)) return map.get(id);
+
+    const hit = store && store.get(id);
+    if (hit !== undefined) {
+      const cached = Promise.resolve(hit);
+      map.set(id, cached);
+      return cached;
     }
-    return map.get(id);
+
+    const promise = run().then(
+      (d) => {
+        if (store) store.set(id, d);
+        return d;
+      },
+      (e) => {
+        map.delete(id);
+        throw e;
+      },
+    );
+    map.set(id, promise);
+    return promise;
   }
 
   const HOUR = 3600e3;
@@ -378,7 +382,24 @@
   const ripperStore = persistentStore("ripper", 6 * HOUR, 120);
   function getRipperResult(itemId) {
     return memoized(ripperCache, itemId, () => {
-      const url = `https://forum.ripper.store/api/search?in=titlesposts&term=${itemId}&matchWords=all&by=&categories=&searchChildren=false&hasTags=&replies=&repliesFilter=atleast&timeFilter=newer&timeRange=&sortBy=relevance&sortDirection=desc&showAs=posts&_=${Date.now()}`;
+      const params = new URLSearchParams({
+        in: "titlesposts",
+        term: itemId,
+        matchWords: "all",
+        by: "",
+        categories: "",
+        searchChildren: "false",
+        hasTags: "",
+        replies: "",
+        repliesFilter: "atleast",
+        timeFilter: "newer",
+        timeRange: "",
+        sortBy: "relevance",
+        sortDirection: "desc",
+        showAs: "posts",
+        _: String(Date.now()),
+      });
+      const url = `https://forum.ripper.store/api/search?${params}`;
       return fetchJson(url).then(({ json }) => {
         if (json.status && json.status.code === "not-authorised") {
           const err = new Error("not-authorised");
@@ -454,9 +475,10 @@
   const RETRY_MSG = "查询失败，点击重试";
   const RIPPER_LOGIN_MSG = "请先登录 RipperStore";
   function classifyRipperError(e) {
-    return e && e.notAuthorised
-      ? { auth: true, message: RIPPER_LOGIN_MSG }
-      : { auth: false, message: RETRY_MSG };
+    if (e && e.notAuthorised) {
+      return { auth: true, message: RIPPER_LOGIN_MSG };
+    }
+    return { auth: false, message: RETRY_MSG };
   }
 
   function closePanels(bar) {
@@ -468,7 +490,10 @@
     const panel = document.createElement("div");
     panel.className = "bcs-panel";
     if (!entries.length) {
-      panel.innerHTML = `<div class="bcs-panel-empty">${emptyMessage || "没有找到匹配结果"}</div>`;
+      const empty = document.createElement("div");
+      empty.className = "bcs-panel-empty";
+      empty.textContent = emptyMessage || "没有找到匹配结果";
+      panel.appendChild(empty);
     } else {
       for (const e of entries) {
         const a = document.createElement("a");
@@ -476,9 +501,13 @@
         a.href = e.url;
         a.target = "_blank";
         a.rel = "noopener noreferrer";
-        a.innerHTML = `<span class="t"></span><span class="s"></span>`;
-        a.querySelector(".t").textContent = e.title;
-        if (e.sub) a.querySelector(".s").textContent = e.sub;
+        const title = document.createElement("span");
+        title.className = "t";
+        title.textContent = e.title;
+        const sub = document.createElement("span");
+        sub.className = "s";
+        if (e.sub) sub.textContent = e.sub;
+        a.append(title, sub);
         panel.appendChild(a);
       }
     }
@@ -506,26 +535,33 @@
     // count badge next to the label — shown only for 2+ results (at 0 the
     // red dot already says "none", and a lone "1" repeats the green dot;
     // VRCPirate in practice never exceeds one match, so its badge stays off).
-    const setResult = (dot, cnt, n) => {
+    function setResult(dot, cnt, n) {
       dot.className = `dot ${n ? "ok" : "none"}`;
       cnt.hidden = n < 2;
       cnt.textContent = n;
-    };
+    }
 
-    const vrcpBtn = document.createElement("button");
-    vrcpBtn.className = "bcs-btn vrcp";
-    vrcpBtn.disabled = true;
-    vrcpBtn.title = "加载中…";
-    vrcpBtn.innerHTML =
-      '<span class="dot pending"></span>VRCPirate<span class="bcs-cnt" hidden></span>';
-    const vrcpDot = vrcpBtn.querySelector(".dot");
-    const vrcpCnt = vrcpBtn.querySelector(".bcs-cnt");
+    function makeSearchButton(className, label, title) {
+      const button = document.createElement("button");
+      button.className = `bcs-btn ${className}`;
+      button.disabled = true;
+      button.title = title;
+      button.innerHTML = `<span class="dot pending"></span>${label}<span class="bcs-cnt" hidden></span>`;
+      return {
+        button,
+        dot: button.querySelector(".dot"),
+        count: button.querySelector(".bcs-cnt"),
+      };
+    }
+
+    const vrcp = makeSearchButton("vrcp", "VRCPirate", "加载中…");
+    const vrcpBtn = vrcp.button;
     vrcpBtn.addEventListener("click", async () => {
       closePanels(bar);
       vrcpBtn.disabled = true;
       try {
         const matches = await getVrcpMatches(itemId);
-        setResult(vrcpDot, vrcpCnt, matches.length);
+        setResult(vrcp.dot, vrcp.count, matches.length);
         if (matches.length === 1) {
           window.open(
             `https://vrcpirate.com/iviewer/${matches[0].id}`,
@@ -543,27 +579,21 @@
           );
         }
       } catch (e) {
-        vrcpDot.className = "dot error";
+        vrcp.dot.className = "dot error";
         showPanel(bar, [], RETRY_MSG);
       } finally {
         vrcpBtn.disabled = false;
       }
     });
 
-    const ripperBtn = document.createElement("button");
-    ripperBtn.className = "bcs-btn ripper";
-    ripperBtn.disabled = true;
-    ripperBtn.title = "检测登录状态中…";
-    ripperBtn.innerHTML =
-      '<span class="dot pending"></span>RipperStore<span class="bcs-cnt" hidden></span>';
-    const ripperDot = ripperBtn.querySelector(".dot");
-    const ripperCnt = ripperBtn.querySelector(".bcs-cnt");
+    const ripper = makeSearchButton("ripper", "RipperStore", "检测登录状态中…");
+    const ripperBtn = ripper.button;
     ripperBtn.addEventListener("click", async () => {
       closePanels(bar);
       ripperBtn.disabled = true;
       try {
         const posts = await getRipperResult(itemId);
-        setResult(ripperDot, ripperCnt, posts.length);
+        setResult(ripper.dot, ripper.count, posts.length);
         showPanel(
           bar,
           posts.map((p) => ({
@@ -579,7 +609,7 @@
         );
       } catch (e) {
         const { auth, message } = classifyRipperError(e);
-        ripperDot.className = `dot ${auth ? "none" : "error"}`;
+        ripper.dot.className = `dot ${auth ? "none" : "error"}`;
         showPanel(bar, [], message);
       } finally {
         ripperBtn.disabled = false;
@@ -606,10 +636,10 @@
       vrcpBtn.title = "";
       getVrcpMatches(itemId)
         .then((matches) => {
-          setResult(vrcpDot, vrcpCnt, matches.length);
+          setResult(vrcp.dot, vrcp.count, matches.length);
         })
         .catch(() => {
-          vrcpDot.className = "dot error";
+          vrcp.dot.className = "dot error";
           vrcpBtn.title = RETRY_MSG;
         });
       // RipperStore: login state comes from the search response itself.
@@ -617,11 +647,11 @@
         .then((posts) => {
           ripperBtn.disabled = false;
           ripperBtn.title = "";
-          setResult(ripperDot, ripperCnt, posts.length);
+          setResult(ripper.dot, ripper.count, posts.length);
         })
         .catch((e) => {
           const { auth, message } = classifyRipperError(e);
-          ripperDot.className = `dot ${auth ? "none" : "error"}`;
+          ripper.dot.className = `dot ${auth ? "none" : "error"}`;
           ripperBtn.title = message;
           if (auth) {
             addWarn("⚠ 未登录 RipperStore", "https://forum.ripper.store/login");
@@ -1142,8 +1172,45 @@
 
     const boothCache = new Map();
     const boothStore = persistentStore("booth", 24 * HOUR, 60);
-    const getBoothItem = (id) =>
-      memoized(
+    // Keep only the fields the modal renders — the raw payload runs tens of
+    // KB per item and would bloat the persistent cache blob.
+    function compactBoothItem(json) {
+      return {
+        id: json.id,
+        name: json.name,
+        url: json.url,
+        price: json.price,
+        wish_lists_count: json.wish_lists_count,
+        shop: json.shop && {
+          name: json.shop.name,
+          url: json.shop.url,
+        },
+        category: json.category && {
+          name: json.category.name,
+          url: json.category.url,
+          parent: json.category.parent && {
+            name: json.category.parent.name,
+          },
+        },
+        tags: (json.tags || []).map((t) => ({
+          name: t.name,
+          url: t.url,
+        })),
+        images: (json.images || []).map((im) => ({
+          original: im.original,
+          resized: im.resized,
+        })),
+        variations: (json.variations || []).map((v) => ({
+          name: v.name,
+          price: v.price,
+        })),
+        description: json.description,
+        factory_description: json.factory_description,
+      };
+    }
+
+    function getBoothItem(id) {
+      return memoized(
         boothCache,
         id,
         () =>
@@ -1152,44 +1219,12 @@
               if (status !== 200 || !json || !json.id) {
                 throw new Error(`booth json ${status}`);
               }
-              // Keep only the fields the modal renders — the raw payload runs
-              // tens of KB per item and would bloat the persistent cache blob.
-              return {
-                id: json.id,
-                name: json.name,
-                url: json.url,
-                price: json.price,
-                wish_lists_count: json.wish_lists_count,
-                shop: json.shop && {
-                  name: json.shop.name,
-                  url: json.shop.url,
-                },
-                category: json.category && {
-                  name: json.category.name,
-                  url: json.category.url,
-                  parent: json.category.parent && {
-                    name: json.category.parent.name,
-                  },
-                },
-                tags: (json.tags || []).map((t) => ({
-                  name: t.name,
-                  url: t.url,
-                })),
-                images: (json.images || []).map((im) => ({
-                  original: im.original,
-                  resized: im.resized,
-                })),
-                variations: (json.variations || []).map((v) => ({
-                  name: v.name,
-                  price: v.price,
-                })),
-                description: json.description,
-                factory_description: json.factory_description,
-              };
+              return compactBoothItem(json);
             },
           ),
         boothStore,
       );
+    }
 
     // Render the item's purchasable variations (name + price) — booth.pm
     // items with >1 price tier (e.g. base + support) don't otherwise surface
@@ -1197,12 +1232,18 @@
     // `overallPrice` is that summary string (e.g. "800 JPY~"), scraped only
     // for its currency suffix since each variation's own price is a bare
     // number.
+    function formatVariationPrice(value, currency) {
+      if (typeof value !== "number") return String(value);
+      const suffix = currency ? ` ${currency}` : "";
+      return `${value.toLocaleString()}${suffix}`;
+    }
+
     function renderVariations(container, variations, overallPrice) {
-      container.innerHTML = "";
+      container.replaceChildren();
       removeToggleAfter(container);
       if (!variations || variations.length < 2) return;
       const currency = /([A-Z]{3})\s*~?$/.exec(overallPrice || "")?.[1];
-      variations.forEach((v) => {
+      for (const v of variations) {
         const row = document.createElement("div");
         row.className = "bcs-var-item";
         const name = document.createElement("span");
@@ -1210,13 +1251,10 @@
         name.textContent = v.name;
         const price = document.createElement("span");
         price.className = "bcs-var-price";
-        price.textContent =
-          typeof v.price === "number"
-            ? `${v.price.toLocaleString()}${currency ? " " + currency : ""}`
-            : String(v.price);
+        price.textContent = formatVariationPrice(v.price, currency);
         row.append(name, price);
         container.appendChild(row);
-      });
+      }
 
       if (variations.length > VAR_SHOW + 1) {
         attachOverflowToggle([...container.children], VAR_SHOW, container, {
@@ -1296,7 +1334,10 @@
         parent.appendChild(btn);
         return btn;
       };
-      return { left: mk(-1, "left", "Previous image"), right: mk(1, "right", "Next image") };
+      return {
+        left: mk(-1, "left", "Previous image"),
+        right: mk(1, "right", "Next image"),
+      };
     }
 
     function openModal(seed, { onClose } = {}) {
@@ -1306,7 +1347,7 @@
       // Booth records the view server-side (the item JSON fetch below carries
       // cookies); mark it locally too so the veil updates without a refetch.
       markSeen(seed.id);
-      scheduleBadges();
+      queueAllBadges();
       overlay.innerHTML = `
         <div class="bcs-modal" role="dialog" aria-modal="true">
           <div class="bcs-modal-top">
@@ -1367,7 +1408,7 @@
         paintStar(on);
         starBtn.disabled = true;
         setWished(seed.id, on)
-          .then(() => scheduleBadges())
+          .then(() => queueAllBadges())
           .catch(() => {
             paintStar(!on);
             starBtn.title = WISH_FAIL_MSG;
@@ -1398,7 +1439,7 @@
       const nav = buildNavPair(stageEl, "bcs-nav", stepImage);
       nav.left.hidden = true;
       nav.right.hidden = true;
-      mainImg.addEventListener("click", () => openZoom());
+      mainImg.addEventListener("click", openZoom);
       function openZoom() {
         const src = images.length ? images[idx].original : mainImg.src;
         if (!src) return;
@@ -1451,7 +1492,7 @@
           titleEl.href = item.url || boothUrl;
           overlay.querySelector(".bcs-buy").href = item.url || boothUrl;
 
-          metaEl.innerHTML = "";
+          metaEl.replaceChildren();
           const addMeta = (text, cls) => {
             const s = document.createElement("span");
             if (cls) s.className = cls;
@@ -1470,18 +1511,19 @@
             addMeta(`♥ ${item.wish_lists_count}`);
           }
           if (item.category && item.category.name) {
-            const text = item.category.parent
-              ? `${item.category.parent.name} › ${item.category.name}`
-              : item.category.name;
+            let text = item.category.name;
+            if (item.category.parent) {
+              text = `${item.category.parent.name} › ${item.category.name}`;
+            }
             metaEl.appendChild(makeLink(text, item.category.url || boothUrl));
           }
 
-          tagsEl.innerHTML = "";
+          tagsEl.replaceChildren();
           removeToggleAfter(tagsEl);
           const tags = item.tags || [];
-          tags.forEach((tg) => {
+          for (const tg of tags) {
             tagsEl.appendChild(makeLink(tg.name, tg.url, "bcs-tag"));
-          });
+          }
           if (tags.length > TAG_SHOW + 2) {
             attachOverflowToggle([...tagsEl.children], TAG_SHOW, tagsEl, {
               count: `共 ${tags.length} 个`,
@@ -1598,27 +1640,52 @@
     }
 
     // 已看 chip + wish star on product cards. The SPA re-renders freely, so a
-    // body-level MutationObserver re-runs the pass (rAF-debounced: a burst
-    // of mutations = one pass). The badge container's presence doubles as
-    // the per-card "already processed" marker; hidden-toggles keep state
-    // fresh without re-creating nodes. The star waits for the wish set; 已看
-    // renders regardless.
-    const wishedSub = lazySubscribe(getWishedIds, () => scheduleBadges());
+    // body-level MutationObserver queues only new/changed card roots for a
+    // rAF-batched pass. The badge container's presence doubles as the
+    // per-card "already processed" marker; hidden-toggles keep state fresh
+    // without re-creating nodes. The star waits for the wish set; 已看 renders
+    // once the history set resolves.
+    const badgeRoots = new Set();
+    function queueBadgeRoots(roots) {
+      roots.forEach((root) => {
+        if (root && root.nodeType === 1) badgeRoots.add(root);
+      });
+      scheduleBadges();
+    }
+    function queueAllBadges() {
+      queueBadgeRoots([document.body]);
+    }
+    const wishedSub = lazySubscribe(getWishedIds, queueAllBadges);
     // Same lazy-retry subscription for the seen set (server history).
-    const histSub = lazySubscribe(getHistory, () => scheduleBadges());
-    wishedSub.run();
-    histSub.run();
+    const histSub = lazySubscribe(getHistory, queueAllBadges);
+    const runWhenIdle = (fn) => {
+      if (typeof requestIdleCallback === "function") {
+        requestIdleCallback(fn, { timeout: 1500 });
+      } else {
+        setTimeout(fn, 350);
+      }
+    };
+    const collectCardWraps = (root, out) => {
+      const own = root.closest && root.closest(".cardImgWrap");
+      if (own) out.add(own);
+      if (root.querySelectorAll) {
+        root.querySelectorAll(".cardImgWrap").forEach((wrap) => out.add(wrap));
+      }
+    };
     let badgeQueued = false;
     function scheduleBadges() {
       if (badgeQueued) return;
       badgeQueued = true;
       requestAnimationFrame(() => {
         badgeQueued = false;
-        wishedSub.run();
-        histSub.run();
+        const roots = [...badgeRoots];
+        badgeRoots.clear();
+        if (!roots.length) return;
         const wishedBadgeSet = wishedSub.get();
         const seen = histData.ids;
-        document.querySelectorAll(".cardImgWrap").forEach((wrap) => {
+        const wraps = new Set();
+        roots.forEach((root) => collectCardWraps(root, wraps));
+        wraps.forEach((wrap) => {
           const ctx = cardItemId(wrap);
           if (!ctx) return;
           const id = ctx.id;
@@ -1631,7 +1698,7 @@
           }
           let star = wrap.querySelector(".bcs-tile-star");
           if (!star) {
-            star = makeTileStar(id, "button", scheduleBadges);
+            star = makeTileStar(id, "button", queueAllBadges);
             wrap.appendChild(star);
           }
           star.dataset.id = id; // the SPA may recycle the wrap for another item
@@ -1647,11 +1714,23 @@
         });
       });
     }
-    new MutationObserver(scheduleBadges).observe(document.body, {
+    new MutationObserver((mutations) => {
+      const roots = [];
+      mutations.forEach((m) => {
+        m.addedNodes.forEach((node) => {
+          if (node.nodeType === 1) roots.push(node);
+        });
+      });
+      if (roots.length) queueBadgeRoots(roots);
+    }).observe(document.body, {
       childList: true,
       subtree: true,
     });
-    scheduleBadges();
+    queueAllBadges();
+    runWhenIdle(() => {
+      wishedSub.run();
+      histSub.run();
+    });
 
     // "Recently viewed" panel behind a fixed corner button. Reuses the
     // overlay stack + .bcs-modal shell; a grid entry reopens the product
@@ -1710,7 +1789,7 @@
             () => {
               disarm();
               render(); // shows 暂无浏览记录, drops the button
-              scheduleBadges(); // card veils come off
+              queueAllBadges(); // card veils come off
             },
             () => {
               clearBtn.classList.remove("armed");
@@ -1728,6 +1807,7 @@
       // user pauses typing (plus immediately on Enter or a tile click), so
       // prefixes don't pile up per keystroke. No-ops without storage grants.
       const FILTER_HIST_KEY = "bcs-filter-history";
+      const FILTER_DEBOUNCE = 80;
       const readFilterHist = () => {
         const list = canStore ? gmReadJson(FILTER_HIST_KEY, []) : [];
         return Array.isArray(list) ? list : [];
@@ -1746,7 +1826,7 @@
       filterWrap.appendChild(drop);
       const renderDrop = () => {
         const list = readFilterHist();
-        drop.innerHTML = "";
+        drop.replaceChildren();
         drop.hidden = !list.length;
         for (const q of list) {
           const row = document.createElement("div");
@@ -1767,7 +1847,7 @@
           row.addEventListener("click", () => {
             filter.value = q;
             saveFilterHist(q); // bump to front
-            applyFilter();
+            render();
             drop.hidden = true;
           });
           row.append(text, del);
@@ -1777,8 +1857,13 @@
       filter.addEventListener("focus", renderDrop);
       filter.addEventListener("click", renderDrop);
       let saveTimer = 0;
+      let filterTimer = 0;
+      const scheduleFilterRender = () => {
+        clearTimeout(filterTimer);
+        filterTimer = setTimeout(() => render(), FILTER_DEBOUNCE);
+      };
       filter.addEventListener("input", () => {
-        applyFilter();
+        scheduleFilterRender();
         drop.hidden = true;
         clearTimeout(saveTimer);
         saveTimer = setTimeout(() => saveFilterHist(filter.value), 1200);
@@ -1797,18 +1882,36 @@
         if (!filterWrap.contains(e.target)) drop.hidden = true;
       });
 
-      const applyFilter = () => {
-        const q = filter.value.trim().toLowerCase();
-        modal.querySelectorAll(".bcs-hist-item").forEach((el) => {
-          el.style.display = !q || (el.dataset.ft || "").includes(q) ? "" : "none";
-        });
-      };
-
-      openOverlay(overlay);
+      openOverlay(overlay, {
+        onClose: () => {
+          clearTimeout(saveTimer);
+          clearTimeout(filterTimer);
+          clearTimeout(armTimer);
+        },
+      });
 
       let wished = null; // Set<string> once resolved; null = unknown/hidden
       let wishInfo = null; // Map<id, {id,title,img,price,shop}> from the endpoint
       let histState = "loading"; // "loading" | "ok" | "fail"
+      function makeHistoryEmpty(text) {
+        const empty = document.createElement("div");
+        empty.className = "bcs-hist-empty";
+        empty.textContent = text;
+        return empty;
+      }
+      function historyEmptyMessage() {
+        if (histState === "loading") return "加载中…";
+        if (histState === "fail") return "历史加载失败，稍后再试";
+        return "暂无浏览记录";
+      }
+      function emptyWishEntry(id) {
+        return { id, title: "", img: "", price: "", shop: "" };
+      }
+      function wishEntryFor(id, historyById) {
+        return (
+          (wishInfo && wishInfo.get(id)) || historyById.get(id) || emptyWishEntry(id)
+        );
+      }
       // fresh: both lists live on Booth's servers now — refetch on every
       // open so likes/views made on booth.pm show up without a page reload.
       getWishList(true)
@@ -1816,14 +1919,14 @@
           wished = w.ids;
           wishInfo = w.byId;
           render();
-          scheduleBadges(); // card ★s may have changed too
+          queueAllBadges(); // card ★s may have changed too
         })
         .catch(() => render());
       getHistory(true)
         .then(() => {
           histState = "ok";
           render();
-          scheduleBadges();
+          queueAllBadges();
         })
         .catch(() => {
           histState = "fail";
@@ -1835,7 +1938,10 @@
         const item = document.createElement("button");
         item.type = "button";
         item.className = "bcs-hist-item";
-        item.dataset.ft = `${entry.title || ""} ${entry.shop || ""}`.toLowerCase();
+        item.dataset.ft = [entry.title, entry.shop, entry.price]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
         const img = document.createElement("img");
         img.alt = "";
         img.loading = "lazy";
@@ -1858,7 +1964,7 @@
         if (wished) {
           const star = makeTileStar(entry.id, "span", () => {
             render(); // moves the tile between sections
-            scheduleBadges();
+            queueAllBadges();
           });
           star.classList.toggle("on", wished.has(String(entry.id)));
           thumb.appendChild(star);
@@ -1881,21 +1987,75 @@
       };
 
       const WISH_SHOW = 12;
+      const entrySearchText = (entry) =>
+        [entry.title, entry.shop, entry.price]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+      const matchesQuery = (entry, q) => !q || entrySearchText(entry).includes(q);
+      function renderLazyTiles(container, entries, show, make, labels) {
+        const appendRange = (from, to) => {
+          const frag = document.createDocumentFragment();
+          for (const entry of entries.slice(from, to)) {
+            frag.appendChild(make(entry));
+          }
+          container.appendChild(frag);
+        };
+        appendRange(0, Math.min(show, entries.length));
+        if (entries.length <= show) return;
+
+        let open = false;
+        const toggle = makeToggle();
+        toggle.querySelector(".bcs-count").textContent = labels.count;
+        const label = toggle.querySelector(".bcs-label");
+        const sync = () => {
+          toggle.classList.toggle("is-open", open);
+          label.textContent = open ? labels.collapse : labels.expand(entries.length - show);
+        };
+        sync();
+        toggle.addEventListener("click", () => {
+          if (open) {
+            while (container.children.length > show) container.lastElementChild.remove();
+            open = false;
+          } else {
+            appendRange(show, entries.length);
+            open = true;
+          }
+          sync();
+        });
+        container.insertAdjacentElement("afterend", toggle);
+      }
       const render = () => {
         modal
           .querySelectorAll(".bcs-hist-grid, .bcs-hist-empty, .bcs-hist-sub, .bcs-toggle")
           .forEach((el) => el.remove());
         const list = histData.list;
-        const hasWish = !!(wished && wished.size);
+        const q = filter.value.trim().toLowerCase();
+        const byId = new Map(list.map((e) => [String(e.id), e]));
+        const wishEntries = wished
+          ? [...wished]
+              .map((id) => wishEntryFor(id, byId))
+              .filter((entry) => matchesQuery(entry, q))
+          : [];
+        const histEntries = list.filter((entry) => matchesQuery(entry, q));
+        const hasWish = !!wishEntries.length;
 
         // Both lists need a Booth session; the wish endpoint's 401 is the
         // only reliable logged-out signal (history.json returns [] either
         // way), so one hint replaces both sections.
         if (wishData.loggedOut) {
-          const empty = document.createElement("div");
-          empty.className = "bcs-hist-empty";
-          empty.textContent = "未登录 Booth — 登录后这里会显示最近看过与收藏";
-          modal.appendChild(empty);
+          modal.appendChild(
+            makeHistoryEmpty("未登录 Booth — 登录后这里会显示最近看过与收藏"),
+          );
+          return;
+        }
+
+        if (q && !wishEntries.length && !histEntries.length) {
+          const message =
+            histState === "loading" && !list.length
+              ? "加载中…"
+              : "没有匹配的收藏或历史";
+          modal.appendChild(makeHistoryEmpty(message));
           return;
         }
 
@@ -1904,35 +2064,25 @@
         // itself (falling back to the history entry for an id just starred
         // this page load, which the memoized response doesn't know about).
         if (hasWish) {
-          const byId = new Map(list.map((e) => [String(e.id), e]));
           const sub = document.createElement("div");
           sub.className = "bcs-hist-sub";
           sub.textContent = "★ 收藏";
           modal.appendChild(sub);
           const wgrid = document.createElement("div");
           wgrid.className = "bcs-hist-grid";
-          const tiles = [...wished].map((id) => {
-            const known =
-              (wishInfo && wishInfo.get(id)) || byId.get(id) || { id, title: "", img: "" };
-            const tile = makeTile(known);
-            wgrid.appendChild(tile);
-            return tile;
-          });
           modal.appendChild(wgrid);
-          if (tiles.length > WISH_SHOW) {
-            attachOverflowToggle(tiles, WISH_SHOW, wgrid, {
-              count: `共 ${tiles.length} 件`,
-              collapse: "收起收藏",
-              expand: (n) => `展开其余 ${n} 件`,
-            });
-          }
+          renderLazyTiles(wgrid, wishEntries, WISH_SHOW, makeTile, {
+            count: `共 ${wishEntries.length} 件`,
+            collapse: "收起收藏",
+            expand: (n) => `展开其余 ${n} 件`,
+          });
         }
 
         // 最近 header row also hosts the clear button (re-appended each
         // render — the node persists so its armed/disabled state survives;
         // appending only on a non-empty list is what hides it otherwise).
         // Header only when there is something to separate or clear.
-        if (hasWish || list.length) {
+        if (histEntries.length || (!q && (hasWish || list.length))) {
           const sub2 = document.createElement("div");
           sub2.className = "bcs-hist-sub bcs-hist-sub-row";
           const label = document.createElement("span");
@@ -1942,24 +2092,17 @@
           modal.appendChild(sub2);
         }
 
-        if (!list.length) {
-          const empty = document.createElement("div");
-          empty.className = "bcs-hist-empty";
-          empty.textContent =
-            histState === "loading"
-              ? "加载中…"
-              : histState === "fail"
-                ? "历史加载失败，稍后再试"
-                : "暂无浏览记录";
-          modal.appendChild(empty);
-          applyFilter();
+        if (!histEntries.length) {
+          if (q) return;
+          modal.appendChild(makeHistoryEmpty(historyEmptyMessage()));
           return;
         }
         const grid = document.createElement("div");
         grid.className = "bcs-hist-grid";
-        for (const entry of list) grid.appendChild(makeTile(entry));
         modal.appendChild(grid);
-        applyFilter();
+        const frag = document.createDocumentFragment();
+        for (const entry of histEntries) frag.appendChild(makeTile(entry));
+        grid.appendChild(frag);
       };
       render();
     }

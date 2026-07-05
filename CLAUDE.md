@@ -112,15 +112,16 @@ memoized into a stable in-place-mutated container and re-walked each time the
 history panel opens — so likes made on booth.pm appear without a page reload. Note
 the similarly-named `wish_lists.json` is a decoy — it returns `{"item_ids":[]}` even
 when logged in. The response carries full item cards (name/price/shop/thumbnail),
-which the panel's 收藏 strip renders directly with no per-item fetches. Writes go to
+which the panel's 收藏 strip renders lazily with no per-item fetches. Writes go to
 `booth.pm/items/<id>/wish_list.json` through `boothWrite` — the shared authenticated-write
 helper (scraped CSRF token, 422 → re-scrape and retry once) that history clearing also
 uses. There is no local pin storage — Booth is the source of truth — and the
 item JSON's `wished` field is deliberately NOT persisted (24h cache would go stale).
-Product cards are marked by a rAF-debounced MutationObserver pass: seen items get a
-grey veil over the card image (`.bcs-seen` + `::after`) plus an 已看 chip; each card
-also gets a clickable wish star (`makeTileStar`, shared with the history tiles —
-hover-revealed when off, constant gold when on, hidden until the wish set resolves).
+Product cards are marked by a rAF-debounced MutationObserver pass that queues only
+new/changed card roots instead of full-scanning the page on every SPA mutation: seen
+items get a grey veil over the card image (`.bcs-seen` + `::after`) plus an 已看 chip;
+each card also gets a clickable wish star (`makeTileStar`, shared with the history
+tiles — hover-revealed when off, constant gold when on, hidden until the wish set resolves).
 The star is a `<button>` so the card click interceptor lets it through, and its item
 id lives on `dataset.id` so a badge pass can re-point a recycled card without
 rebuilding the node.
