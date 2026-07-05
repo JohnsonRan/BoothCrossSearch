@@ -52,7 +52,12 @@ Two external APIs, each with a real gotcha:
 
 Both lookups are memoized per item ID via `memoized()` on a shared in-flight promise (`vrcpCache` /
 `ripperCache`), so an `autoCheck()` call and a later manual button click never double-fire the same
-request; a rejected promise is evicted from the cache so the next attempt can retry.
+request; a rejected promise is evicted from the cache so the next attempt can retry. Successful
+results additionally persist across page loads via `persistentStore()` (one TTL'd JSON blob per
+source in `GM_getValue`/`GM_setValue`: search results 6h, Booth item JSON 24h, oldest-evicted size
+cap). Only fulfilled values are persisted — errors, including RipperStore's not-authorised, never
+outlive the page. Everything storage-backed degrades gracefully when the GM value grants are
+missing (`canStore`).
 
 ### Booth item page (`initBooth`)
 
@@ -82,7 +87,13 @@ The modal (`openModal`) is seeded immediately from data already visible on the c
 item id) so it never opens blank, then enriched by fetching `https://booth.pm/en/items/<id>.json`
 (`getBoothItem`, memoized like the search lookups) for full description, tags, variations, and
 multi-image gallery. That endpoint 403s without a browser-like `User-Agent`, and the modal degrades
-gracefully (shows an R18/login hint) if the fetch fails.
+gracefully (shows an R18/login hint) if the fetch fails. The fetched JSON is stripped down to just
+the fields the modal renders before caching, to keep the persistent blob small.
+
+A cross-site "recently viewed" history (`bcs-history` GM value, deduped by item id, capped at 60)
+is written from both Booth item-page visits and vrcatalogue modal opens, but only vrcatalogue shows
+UI for it: a fixed corner button (`.bcs-hist-fab`, hidden without storage grants) opens a grid
+panel whose entries reopen the product modal.
 
 ### Constraints worth knowing
 

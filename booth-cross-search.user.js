@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.6.6
+// @version      2.8.0
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -11,6 +11,8 @@
 // @connect      forum.ripper.store
 // @connect      booth.pm
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -43,6 +45,11 @@
     .bcs-btn .dot.error { background: #e0a626; }
     @keyframes bcs-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
     .bcs-btn:disabled { opacity: .5; cursor: wait; }
+    .bcs-btn .bcs-cnt {
+      min-width: 16px; padding: 0 5px; border-radius: 8px; text-align: center;
+      font-size: 11px; font-weight: 700; line-height: 16px;
+      background: var(--item-hover, #efefef); color: var(--muted, #777);
+    }
     .bcs-warn { font-size: 11px; color: #b8860b; font-weight: 600; text-decoration: none; }
     .bcs-warn:hover { text-decoration: underline; }
     .bcs-panel {
@@ -120,37 +127,117 @@
     }));
   }
 
+  // GM value storage may be missing entirely (manager without the grant, or
+  // an older installed script version whose header lacked it) — persistence
+  // and history both degrade to no-ops/hidden rather than breaking search.
+  const canStore =
+    typeof GM_getValue === "function" && typeof GM_setValue === "function";
+
+  // Guarded JSON (de)serialization over GM values — the per-source caches and
+  // the history list share this so the try/catch plumbing lives once. Values
+  // go through JSON strings (not raw objects) since not every manager
+  // serializes objects.
+  function gmReadJson(key, fallback) {
+    try {
+      return JSON.parse(GM_getValue(key, "null")) ?? fallback;
+    } catch (e) {
+      return fallback;
+    }
+  }
+  function gmWriteJson(key, value) {
+    try {
+      GM_setValue(key, JSON.stringify(value));
+    } catch (e) {
+      /* storage full/unavailable — degrade to memory-only */
+    }
+  }
+
+  // TTL'd per-item cache persisted as one JSON blob per source under a
+  // `bcs-cache-<name>` GM value. Expired entries are pruned once on first
+  // load; `max` caps the blob by evicting oldest-written entries so a long
+  // browsing session can't grow it unbounded.
+  function persistentStore(name, ttl, max) {
+    if (!canStore) return { get: () => undefined, set: () => {} };
+    const key = `bcs-cache-${name}`;
+    let data = null;
+    const load = () => {
+      if (!data) {
+        data = gmReadJson(key, {});
+        const now = Date.now();
+        for (const id of Object.keys(data)) {
+          if (!data[id] || now - data[id].t > ttl) delete data[id];
+        }
+      }
+      return data;
+    };
+    return {
+      get(id) {
+        const entry = load()[id];
+        return entry ? entry.d : undefined;
+      },
+      set(id, d) {
+        const map = load();
+        map[id] = { t: Date.now(), d };
+        const ids = Object.keys(map);
+        if (ids.length > max) {
+          ids.sort((a, b) => map[a].t - map[b].t);
+          ids.slice(0, ids.length - max).forEach((old) => delete map[old]);
+        }
+        gmWriteJson(key, map);
+      },
+    };
+  }
+
   // VRCPirate needs no login to search. RipperStore's search API returns a
   // {status:{code:"not-authorised"}} envelope when logged out instead of the
   // usual posts payload, so login state is read straight off that response.
   // Results memoize per item id on a shared in-flight promise so an auto-check
   // and a later button click never fire the same request twice; a failure
   // clears the cache so the next click can retry instead of staying rejected.
-  function memoized(map, id, run) {
+  // An optional persistentStore backs the memo across page loads — only
+  // successful results are persisted, so a cached "not-authorised" can never
+  // outlive an actual login.
+  function memoized(map, id, run, store) {
     if (!map.has(id)) {
+      const hit = store && store.get(id);
       map.set(
         id,
-        run().catch((e) => {
-          map.delete(id);
-          throw e;
-        }),
+        hit !== undefined
+          ? Promise.resolve(hit)
+          : run().then(
+              (d) => {
+                if (store) store.set(id, d);
+                return d;
+              },
+              (e) => {
+                map.delete(id);
+                throw e;
+              },
+            ),
       );
     }
     return map.get(id);
   }
 
+  const HOUR = 3600e3;
   const vrcpCache = new Map();
+  const vrcpStore = persistentStore("vrcp", 6 * HOUR, 120);
   function getVrcpMatches(itemId) {
-    return memoized(vrcpCache, itemId, () =>
-      fetchJson(
-        `https://api-v2.vrcpirate.com/assets?page=1&search=${itemId}`,
-      ).then(({ json }) =>
-        (json.data || []).filter((a) => String(a.boothID) === itemId),
-      ),
+    return memoized(
+      vrcpCache,
+      itemId,
+      () =>
+        fetchJson(
+          `https://api-v2.vrcpirate.com/assets?page=1&search=${itemId}`,
+        ).then(({ json }) =>
+          (json.data || []).filter((a) => String(a.boothID) === itemId),
+        ),
+      vrcpStore,
     );
   }
 
   const ripperCache = new Map();
+  const ripperStore = persistentStore("ripper", 6 * HOUR, 120);
   function getRipperResult(itemId) {
     return memoized(ripperCache, itemId, () => {
       const url = `https://forum.ripper.store/api/search?in=titlesposts&term=${itemId}&matchWords=all&by=&categories=&searchChildren=false&hasTags=&replies=&repliesFilter=atleast&timeFilter=newer&timeRange=&sortBy=relevance&sortDirection=desc&showAs=posts&_=${Date.now()}`;
@@ -164,7 +251,55 @@
         posts.sort((a, b) => b.timestamp - a.timestamp);
         return posts;
       });
-    });
+    }, ripperStore);
+  }
+
+  // Cross-site "recently viewed" list (newest first, deduped by item id).
+  // Written from both hosts — Booth item-page visits and vrcatalogue modal
+  // opens — but only vrcatalogue renders a UI for it (the corner button).
+  const HIST_KEY = "bcs-history";
+  const HIST_MAX = 60;
+  // booth.pximg.net serves a whitelist of resize variants via a /c/<spec>/
+  // path prefix — arbitrary sizes 403, and the item JSON's "resized" is a
+  // blurry c/72x72. History stores the canonical full-size URL (spec
+  // stripped); each render site applies the variant it needs. Non-Booth-CDN
+  // URLs pass through untouched.
+  function boothImgVariant(url, spec) {
+    if (!url || !url.includes("booth.pximg.net/")) return url || "";
+    const bare = url.replace(/booth\.pximg\.net\/c\/[^/]+\//, "booth.pximg.net/");
+    return spec ? bare.replace("booth.pximg.net/", `booth.pximg.net/${spec}/`) : bare;
+  }
+  // Whitelisted variant sized for the history grid (130px+ cells on hi-DPI).
+  const HIST_IMG_SPEC = "c/300x300_a2_g5";
+  function readHistory() {
+    if (!canStore) return [];
+    const list = gmReadJson(HIST_KEY, []);
+    return Array.isArray(list) ? list : [];
+  }
+  function pushHistory(entry) {
+    if (!canStore || !entry.id) return;
+    const title = entry.title || "";
+    const img = boothImgVariant(entry.img);
+    const list = readHistory();
+    // openModal re-logs the same item right after its seed log once the
+    // Booth fetch resolves — when that enrichment changed nothing, skip the
+    // synchronous list rewrite. Freshness guard so a genuine revisit hours
+    // later still refreshes the entry's timestamp.
+    const head = list[0];
+    if (
+      head &&
+      head.id === entry.id &&
+      head.title === title &&
+      head.img === img &&
+      Date.now() - head.t < 60e3
+    )
+      return;
+    const rest = list.filter((e) => e.id !== entry.id);
+    rest.unshift({ id: entry.id, title, img, t: Date.now() });
+    gmWriteJson(HIST_KEY, rest.slice(0, HIST_MAX));
+  }
+  function clearHistory() {
+    if (canStore) gmWriteJson(HIST_KEY, []);
   }
 
   // Single source of truth for the two ways a search request can fail, so the
@@ -220,18 +355,29 @@
     const bar = document.createElement("div");
     bar.className = "bcs-bar";
 
+    // Paint a lookup result onto a button: green/red status dot plus the
+    // count badge next to the label — hidden at 0 (the red dot already says
+    // "none"; a "0" pill would just repeat it).
+    const setResult = (dot, cnt, n) => {
+      dot.className = `dot ${n ? "ok" : "none"}`;
+      cnt.hidden = !n;
+      cnt.textContent = n;
+    };
+
     const vrcpBtn = document.createElement("button");
     vrcpBtn.className = "bcs-btn vrcp";
     vrcpBtn.disabled = true;
     vrcpBtn.title = "加载中…";
-    vrcpBtn.innerHTML = '<span class="dot pending"></span>VRCPirate';
+    vrcpBtn.innerHTML =
+      '<span class="dot pending"></span>VRCPirate<span class="bcs-cnt" hidden></span>';
     const vrcpDot = vrcpBtn.querySelector(".dot");
+    const vrcpCnt = vrcpBtn.querySelector(".bcs-cnt");
     vrcpBtn.addEventListener("click", async () => {
       closePanels(bar);
       vrcpBtn.disabled = true;
       try {
         const matches = await getVrcpMatches(itemId);
-        vrcpDot.className = `dot ${matches.length ? "ok" : "none"}`;
+        setResult(vrcpDot, vrcpCnt, matches.length);
         if (matches.length === 1) {
           window.open(
             `https://vrcpirate.com/iviewer/${matches[0].id}`,
@@ -260,14 +406,16 @@
     ripperBtn.className = "bcs-btn ripper";
     ripperBtn.disabled = true;
     ripperBtn.title = "检测登录状态中…";
-    ripperBtn.innerHTML = '<span class="dot pending"></span>RipperStore';
+    ripperBtn.innerHTML =
+      '<span class="dot pending"></span>RipperStore<span class="bcs-cnt" hidden></span>';
     const ripperDot = ripperBtn.querySelector(".dot");
+    const ripperCnt = ripperBtn.querySelector(".bcs-cnt");
     ripperBtn.addEventListener("click", async () => {
       closePanels(bar);
       ripperBtn.disabled = true;
       try {
         const posts = await getRipperResult(itemId);
-        ripperDot.className = `dot ${posts.length ? "ok" : "none"}`;
+        setResult(ripperDot, ripperCnt, posts.length);
         showPanel(
           bar,
           posts.map((p) => ({
@@ -310,7 +458,7 @@
       vrcpBtn.title = "";
       getVrcpMatches(itemId)
         .then((matches) => {
-          vrcpDot.className = `dot ${matches.length ? "ok" : "none"}`;
+          setResult(vrcpDot, vrcpCnt, matches.length);
         })
         .catch(() => {
           vrcpDot.className = "dot error";
@@ -321,7 +469,7 @@
         .then((posts) => {
           ripperBtn.disabled = false;
           ripperBtn.title = "";
-          ripperDot.className = `dot ${posts.length ? "ok" : "none"}`;
+          setResult(ripperDot, ripperCnt, posts.length);
         })
         .catch((e) => {
           const { auth, message } = classifyRipperError(e);
@@ -396,6 +544,17 @@
     const idMatch = location.pathname.match(/\/items\/(\d+)/);
     if (!idMatch) return;
     const itemId = idMatch[1];
+
+    // Record the visit so the vrcatalogue "recently viewed" panel also covers
+    // items browsed directly on Booth. og: meta is server-rendered, so it's
+    // already present at document-idle even while React still fills the body.
+    const ogMeta = (p) =>
+      document.querySelector(`meta[property="og:${p}"]`)?.content || "";
+    pushHistory({
+      id: itemId,
+      title: (ogMeta("title") || document.title).replace(/\s*-\s*BOOTH$/, "").trim(),
+      img: ogMeta("image"),
+    });
 
     // Collapse the item description behind an expand button. On the generic
     // booth.pm/items template, the description body is the .my-40 wrapper
@@ -476,8 +635,7 @@
     }
 
     function findTitleEl() {
-      const og = document.querySelector('meta[property="og:title"]');
-      const wanted = (og ? og.content : document.title).trim();
+      const wanted = (ogMeta("title") || document.title).trim();
       const heads = document.querySelectorAll("h1, h2, h3");
       for (const h of heads) {
         const t = h.textContent.trim();
@@ -644,6 +802,38 @@
         font-size: 13px; line-height: 1.7; color: var(--text, #222); white-space: pre-wrap; word-break: break-word;
       }
       .bcs-modal-desc.bcs-dim { color: var(--muted, #888); }
+      .bcs-hist-fab {
+        position: fixed; right: 18px; bottom: 18px; z-index: 9998;
+        width: 44px; height: 44px; border-radius: 50%; padding: 0;
+        display: flex; align-items: center; justify-content: center; cursor: pointer;
+        border: 1px solid var(--border, #ddd); background: var(--panel, #fff); color: var(--text, #222);
+        box-shadow: 0 2px 10px rgba(0,0,0,.18); transition: background .15s, transform .12s;
+      }
+      .bcs-hist-fab:hover { background: var(--item-hover, #f5f5f5); transform: scale(1.06); }
+      .bcs-hist-fab svg { width: 20px; height: 20px; }
+      .bcs-hist-head {
+        display: flex; justify-content: space-between; align-items: center;
+        margin-bottom: 14px; font-size: 15px; font-weight: 700; color: var(--text, #222);
+      }
+      .bcs-hist-clear {
+        border: none; background: none; padding: 0; cursor: pointer;
+        font-size: 12px; font-weight: 600; color: var(--muted, #888); font-family: inherit;
+      }
+      .bcs-hist-clear:hover { color: var(--accent, #fc4d50); }
+      .bcs-hist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; }
+      .bcs-hist-item { border: none; background: none; padding: 0; cursor: pointer; text-align: left; font-family: inherit; }
+      .bcs-hist-item img {
+        width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
+        border-radius: 8px; background: var(--skel, #f4f4f5);
+      }
+      .bcs-hist-item .ht {
+        margin-top: 6px; font-size: 12px; line-height: 1.4; color: var(--text, #222);
+        display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+        word-break: break-word;
+      }
+      .bcs-hist-item:hover .ht { color: var(--accent, #fc4d50); }
+      .bcs-hist-item .hd { margin-top: 2px; font-size: 11px; color: var(--muted, #888); }
+      .bcs-hist-empty { padding: 32px 0; text-align: center; font-size: 13px; color: var(--muted, #888); }
       @media (max-width: 640px) {
         .bcs-modal-top { flex-direction: column; }
         .bcs-media { flex: none; width: 100%; }
@@ -653,16 +843,54 @@
     const TAG_SHOW = 8;
     const VAR_SHOW = 3;
     const boothCache = new Map();
+    const boothStore = persistentStore("booth", 24 * HOUR, 60);
     const getBoothItem = (id) =>
-      memoized(boothCache, id, () =>
-        fetchJson(`https://booth.pm/en/items/${id}.json`).then(
-          ({ status, json }) => {
-            if (status !== 200 || !json || !json.id) {
-              throw new Error(`booth json ${status}`);
-            }
-            return json;
-          },
-        ),
+      memoized(
+        boothCache,
+        id,
+        () =>
+          fetchJson(`https://booth.pm/en/items/${id}.json`).then(
+            ({ status, json }) => {
+              if (status !== 200 || !json || !json.id) {
+                throw new Error(`booth json ${status}`);
+              }
+              // Keep only the fields the modal renders — the raw payload runs
+              // tens of KB per item and would bloat the persistent cache blob.
+              return {
+                id: json.id,
+                name: json.name,
+                url: json.url,
+                price: json.price,
+                wish_lists_count: json.wish_lists_count,
+                shop: json.shop && {
+                  name: json.shop.name,
+                  url: json.shop.url,
+                },
+                category: json.category && {
+                  name: json.category.name,
+                  url: json.category.url,
+                  parent: json.category.parent && {
+                    name: json.category.parent.name,
+                  },
+                },
+                tags: (json.tags || []).map((t) => ({
+                  name: t.name,
+                  url: t.url,
+                })),
+                images: (json.images || []).map((im) => ({
+                  original: im.original,
+                  resized: im.resized,
+                })),
+                variations: (json.variations || []).map((v) => ({
+                  name: v.name,
+                  price: v.price,
+                })),
+                description: json.description,
+                factory_description: json.factory_description,
+              };
+            },
+          ),
+        boothStore,
       );
 
     // Render the item's purchasable variations (name + price) — booth.pm
@@ -741,13 +969,22 @@
       },
       true,
     );
+    // Body scroll is locked while any overlay is up: saved when the stack
+    // goes 0→1, restored when it empties — callers never touch overflow.
+    let prevBodyOverflow = "";
     function openOverlay(el, { onClose, closeOnAnyClick, onArrow } = {}) {
+      if (!overlayStack.length) {
+        prevBodyOverflow = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+      }
       const entry = {
         onArrow,
         close: () => {
           el.remove();
           const i = overlayStack.indexOf(entry);
           if (i !== -1) overlayStack.splice(i, 1);
+          if (!overlayStack.length)
+            document.body.style.overflow = prevBodyOverflow;
           onClose?.();
         },
       };
@@ -782,10 +1019,13 @@
       return { left: mk(-1, "left", "Previous image"), right: mk(1, "right", "Next image") };
     }
 
-    function openModal(seed) {
+    function openModal(seed, { onClose } = {}) {
       const overlay = document.createElement("div");
       overlay.className = "bcs-overlay";
       const boothUrl = `https://booth.pm/items/${seed.id}`;
+      // Log immediately with card-level data so the entry exists even if the
+      // Booth fetch fails (R18); re-logged with better title/image on success.
+      pushHistory({ id: seed.id, title: seed.title, img: seed.img });
       overlay.innerHTML = `
         <div class="bcs-modal" role="dialog" aria-modal="true">
           <div class="bcs-modal-top">
@@ -888,14 +1128,7 @@
       metaEl.insertAdjacentElement("afterend", bar);
       bar.autoCheck();
 
-      const prevOverflow = document.body.style.overflow;
-      document.body.style.overflow = "hidden";
-      openOverlay(overlay, {
-        onArrow: stepImage,
-        onClose: () => {
-          document.body.style.overflow = prevOverflow;
-        },
-      });
+      openOverlay(overlay, { onArrow: stepImage, onClose });
 
       getBoothItem(seed.id)
         .then((item) => {
@@ -906,9 +1139,13 @@
 
           metaEl.innerHTML = "";
           if (item.shop && item.shop.name) {
-            const s = document.createElement("span");
-            s.textContent = item.shop.name;
-            metaEl.appendChild(s);
+            if (item.shop.url) {
+              metaEl.appendChild(makeLink(item.shop.name, item.shop.url));
+            } else {
+              const s = document.createElement("span");
+              s.textContent = item.shop.name;
+              metaEl.appendChild(s);
+            }
           }
           if (item.price) {
             const s = document.createElement("span");
@@ -982,6 +1219,14 @@
           }
           showImage(0);
 
+          pushHistory({
+            id: seed.id,
+            title: item.name,
+            img: images.length
+              ? images[0].resized || images[0].original
+              : seed.img,
+          });
+
           renderVariations(varEl, item.variations, item.price);
 
           const desc = [item.description, item.factory_description]
@@ -1039,6 +1284,92 @@
       },
       true,
     );
+
+    // "Recently viewed" panel behind a fixed corner button. Reuses the
+    // overlay stack + .bcs-modal shell; a grid entry reopens the product
+    // modal with the stored seed (same shape a card click produces).
+    function openHistory() {
+      const overlay = document.createElement("div");
+      overlay.className = "bcs-overlay";
+      const modal = document.createElement("div");
+      modal.className = "bcs-modal";
+      modal.innerHTML = '<div class="bcs-hist-head"><span>最近看过</span></div>';
+      overlay.appendChild(modal);
+
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "bcs-hist-clear";
+      clear.textContent = "清空";
+      clear.addEventListener("click", () => {
+        clearHistory();
+        render();
+      });
+      modal.firstElementChild.appendChild(clear);
+
+      openOverlay(overlay);
+
+      const render = () => {
+        modal.querySelector(".bcs-hist-grid, .bcs-hist-empty")?.remove();
+        const list = readHistory();
+        clear.hidden = !list.length;
+        if (!list.length) {
+          const empty = document.createElement("div");
+          empty.className = "bcs-hist-empty";
+          empty.textContent = "暂无浏览记录";
+          modal.appendChild(empty);
+          return;
+        }
+        const grid = document.createElement("div");
+        grid.className = "bcs-hist-grid";
+        for (const entry of list) {
+          const item = document.createElement("button");
+          item.type = "button";
+          item.className = "bcs-hist-item";
+          const img = document.createElement("img");
+          img.alt = "";
+          img.loading = "lazy";
+          // Grid-sized variant; also normalizes entries written before the
+          // canonical-URL change (which stored a baked 72px variant).
+          if (entry.img) img.src = boothImgVariant(entry.img, HIST_IMG_SPEC);
+          const title = document.createElement("div");
+          title.className = "ht";
+          title.textContent = entry.title || `Booth #${entry.id}`;
+          const date = document.createElement("div");
+          date.className = "hd";
+          date.textContent = formatDate(entry.t);
+          item.append(img, title, date);
+          item.addEventListener("click", () => {
+            // Stack the product modal ON TOP of the history panel (the
+            // overlay stack routes Escape/backdrop to the topmost), so
+            // closing the modal returns to the list instead of the page.
+            // Seed with the full-size image (strip legacy baked variants) —
+            // the modal stage is far larger than a grid cell — and re-render
+            // the grid on close since the visit just reordered it.
+            openModal(
+              { id: entry.id, title: entry.title, img: boothImgVariant(entry.img) },
+              { onClose: render },
+            );
+          });
+          grid.appendChild(item);
+        }
+        modal.appendChild(grid);
+      };
+      render();
+    }
+
+    // No storage grant → nothing ever gets recorded, so don't show an entry
+    // point to a permanently empty list.
+    if (canStore) {
+      const fab = document.createElement("button");
+      fab.type = "button";
+      fab.className = "bcs-hist-fab";
+      fab.title = "最近看过";
+      fab.setAttribute("aria-label", "最近看过");
+      fab.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15.5 14"></polyline></svg>';
+      fab.addEventListener("click", openHistory);
+      document.body.appendChild(fab);
+    }
   }
 
   // ---------------------------------------------------------------- entry
