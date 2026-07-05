@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.9.0
+// @version      2.9.1
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -865,7 +865,7 @@
         color: var(--muted, #999); transition: color .15s, transform .12s;
       }
       .bcs-star:hover { transform: scale(1.15); }
-      .bcs-star.on { color: var(--accent, #fc4d50); }
+      .bcs-star.on { color: #f5a623; }
       .bcs-star:disabled { opacity: .5; cursor: wait; }
       .bcs-star svg { width: 20px; height: 20px; display: block; }
       .bcs-title {
@@ -920,8 +920,9 @@
         border-radius: 6px; outline: none;
       }
       .bcs-hist-filter:focus { border-color: var(--accent, #fc4d50); }
-      .bcs-hist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; }
+      .bcs-hist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; align-items: start; }
       .bcs-hist-item { border: none; background: none; padding: 0; cursor: pointer; text-align: left; font-family: inherit; }
+      .bcs-hist-thumb { position: relative; }
       .bcs-hist-item img {
         width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
         border-radius: 8px; background: var(--skel, #f4f4f5);
@@ -929,7 +930,7 @@
       .bcs-hist-item .ht {
         margin-top: 6px; font-size: 12px; line-height: 1.4; color: var(--text, #222);
         display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-        word-break: break-word;
+        word-break: break-word; min-height: 2.8em;
       }
       .bcs-hist-item:hover .ht { color: var(--accent, #fc4d50); }
       .bcs-hist-item .hd { margin-top: 2px; font-size: 11px; color: var(--muted, #888); }
@@ -942,7 +943,6 @@
         margin: 14px 0 8px; font-size: 12px; font-weight: 700;
         color: var(--muted, #888);
       }
-      .bcs-hist-item { position: relative; }
       .bcs-hist-star {
         position: absolute; top: 6px; right: 6px; width: 22px; height: 22px;
         display: flex; align-items: center; justify-content: center;
@@ -951,7 +951,7 @@
         opacity: 0; transition: opacity .12s, color .15s;
       }
       .bcs-hist-item:hover .bcs-hist-star { opacity: 1; }
-      .bcs-hist-star.on { opacity: 1; color: var(--accent, #fc4d50); }
+      .bcs-hist-star.on { opacity: 1; color: #f5a623; }
       .bcs-hist-star svg { width: 14px; height: 14px; }
       @media (max-width: 640px) {
         .bcs-modal-top { flex-direction: column; }
@@ -963,10 +963,11 @@
         display: flex; gap: 4px; pointer-events: none;
       }
       .bcs-badge {
-        padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 700;
-        background: rgba(0,0,0,.55); color: #fff; backdrop-filter: blur(2px);
+        padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700;
+        background: rgba(0,0,0,.72); color: #fff; backdrop-filter: blur(2px);
+        box-shadow: 0 1px 4px rgba(0,0,0,.35); letter-spacing: .5px;
       }
-      .bcs-badge-wish { background: var(--accent, #fc4d50); }
+      .bcs-badge-wish { background: #f5a623; }
     `);
 
     const TAG_SHOW = 8;
@@ -1562,6 +1563,11 @@
         // Grid-sized variant; also normalizes entries written before the
         // canonical-URL change (which stored a baked 72px variant).
         if (entry.img) img.src = boothImgVariant(entry.img, HIST_IMG_SPEC);
+        // Star anchors to this wrapper, not the tile: tile heights vary
+        // (title lines, optional meta/date), the square thumb never does.
+        const thumb = document.createElement("div");
+        thumb.className = "bcs-hist-thumb";
+        thumb.appendChild(img);
         const title = document.createElement("div");
         title.className = "ht";
         title.textContent = entry.title || `Booth #${entry.id}`;
@@ -1569,7 +1575,7 @@
         meta.className = "hm";
         meta.textContent = [entry.shop, entry.price].filter(Boolean).join(" · ");
         meta.hidden = !meta.textContent;
-        item.append(img, title, meta);
+        item.append(thumb, title, meta);
         if (entry.t) {
           const date = document.createElement("div");
           date.className = "hd";
@@ -1596,7 +1602,7 @@
               },
             );
           });
-          item.appendChild(star);
+          thumb.appendChild(star);
         }
         item.addEventListener("click", () => {
           // Stack the product modal ON TOP of the history panel (the
