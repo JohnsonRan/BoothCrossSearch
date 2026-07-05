@@ -95,6 +95,14 @@ is written from both Booth item-page visits and vrcatalogue modal opens, but onl
 UI for it: a fixed corner button (`.bcs-hist-fab`, hidden without storage grants) opens a grid
 panel whose entries reopen the product modal.
 
+A star on the vrcatalogue modal and history tiles syncs with the user's real Booth
+wish list ("スキ!"): state is one id-set fetch per page load
+(`accounts.booth.pm/wish_lists.json`, empty-but-200 when logged out), writes go to
+`booth.pm/items/<id>/wish_list.json` with a scraped CSRF token (422 → re-scrape,
+retry once). There is no local pin storage — Booth is the source of truth — and the
+item JSON's `wished` field is deliberately NOT persisted (24h cache would go stale).
+Product cards get 已看/★ chips from a rAF-debounced MutationObserver pass.
+
 ### Constraints worth knowing
 
 - All cross-origin requests go through `GM_xmlhttpRequest` (declared via `@connect` in the header —

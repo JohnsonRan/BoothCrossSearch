@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.8.0
+// @version      2.9.0
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -10,6 +10,7 @@
 // @connect      api-v2.vrcpirate.com
 // @connect      forum.ripper.store
 // @connect      booth.pm
+// @connect      accounts.booth.pm
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -107,11 +108,12 @@
     return a;
   }
 
-  function gmGet(url) {
+  function gmGet(url, opts = {}) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
-        method: "GET",
+        method: opts.method || "GET",
         url,
+        headers: opts.headers,
         timeout: 10000,
         onload: resolve,
         onerror: reject,
@@ -125,6 +127,83 @@
       status: res.status,
       json: JSON.parse(res.responseText),
     }));
+  }
+
+  // ---- Booth wish list ("スキ!") sync. Booth is the single source of
+  // truth: star state everywhere = membership in this id set, fetched once
+  // per page load (GM_xmlhttpRequest sends the user's booth cookies; logged
+  // out the endpoint returns an empty list with HTTP 200, so stars simply
+  // render unfilled). Endpoints are private — if Booth changes them only
+  // the star feature degrades; search and history are unaffected.
+  let wishedIdsPromise = null;
+  function getWishedIds() {
+    if (!wishedIdsPromise) {
+      wishedIdsPromise = fetchJson("https://accounts.booth.pm/wish_lists.json")
+        .then(({ status, json }) => {
+          if (status !== 200 || !json || !Array.isArray(json.item_ids)) {
+            throw new Error(`wish_lists ${status}`);
+          }
+          return new Set(json.item_ids.map(String));
+        })
+        .catch((e) => {
+          wishedIdsPromise = null;
+          throw e;
+        });
+    }
+    return wishedIdsPromise;
+  }
+
+  // Rails CSRF token, scraped from any booth.pm page and memoized. A 422 on
+  // a write means it went stale (or there is no session) — refreshed and
+  // retried once by setWished.
+  let csrfPromise = null;
+  function getCsrfToken(fresh) {
+    if (fresh || !csrfPromise) {
+      csrfPromise = gmGet("https://booth.pm/en")
+        .then((res) => {
+          const m = (res.responseText || "").match(
+            /<meta name="csrf-token" content="([^"]+)"/,
+          );
+          if (!m) throw new Error("no csrf token");
+          return m[1];
+        })
+        .catch((e) => {
+          csrfPromise = null;
+          throw e;
+        });
+    }
+    return csrfPromise;
+  }
+
+  function setWished(itemId, on) {
+    const send = (token) =>
+      gmGet(`https://booth.pm/items/${itemId}/wish_list.json`, {
+        method: on ? "POST" : "DELETE",
+        headers: {
+          "X-CSRF-Token": token,
+          Accept: "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+      });
+    return getCsrfToken()
+      .then(send)
+      .then((res) => {
+        if (res.status >= 200 && res.status < 300) return;
+        if (res.status !== 422) throw new Error(`wish_list ${res.status}`);
+        return getCsrfToken(true)
+          .then(send)
+          .then((res2) => {
+            if (res2.status < 200 || res2.status >= 300) {
+              throw new Error(`wish_list ${res2.status}`);
+            }
+          });
+      })
+      .then(() =>
+        getWishedIds().then((set) => {
+          if (on) set.add(String(itemId));
+          else set.delete(String(itemId));
+        }),
+      );
   }
 
   // GM value storage may be missing entirely (manager without the grant, or
@@ -280,6 +359,8 @@
     if (!canStore || !entry.id) return;
     const title = entry.title || "";
     const img = boothImgVariant(entry.img);
+    const price = entry.price || "";
+    const shop = entry.shop || "";
     const list = readHistory();
     // openModal re-logs the same item right after its seed log once the
     // Booth fetch resolves — when that enrichment changed nothing, skip the
@@ -291,11 +372,13 @@
       head.id === entry.id &&
       head.title === title &&
       head.img === img &&
+      (head.price || "") === price &&
+      (head.shop || "") === shop &&
       Date.now() - head.t < 60e3
     )
       return;
     const rest = list.filter((e) => e.id !== entry.id);
-    rest.unshift({ id: entry.id, title, img, t: Date.now() });
+    rest.unshift({ id: entry.id, title, img, price, shop, t: Date.now() });
     gmWriteJson(HIST_KEY, rest.slice(0, HIST_MAX));
   }
   function clearHistory() {
@@ -775,6 +858,16 @@
       .bcs-var-name { color: var(--text, #222); word-break: break-word; }
       .bcs-var-price { color: var(--accent, #fc4d50); font-weight: 700; flex: none; }
       .bcs-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+      .bcs-title-row { display: flex; align-items: flex-start; gap: 8px; }
+      .bcs-title-row .bcs-title { flex: 1; min-width: 0; }
+      .bcs-star {
+        flex: none; border: none; background: none; padding: 2px; cursor: pointer;
+        color: var(--muted, #999); transition: color .15s, transform .12s;
+      }
+      .bcs-star:hover { transform: scale(1.15); }
+      .bcs-star.on { color: var(--accent, #fc4d50); }
+      .bcs-star:disabled { opacity: .5; cursor: wait; }
+      .bcs-star svg { width: 20px; height: 20px; display: block; }
       .bcs-title {
         font-size: 17px; font-weight: 700; line-height: 1.45; color: var(--text, #222);
         text-decoration: none; word-break: break-word;
@@ -820,6 +913,13 @@
         font-size: 12px; font-weight: 600; color: var(--muted, #888); font-family: inherit;
       }
       .bcs-hist-clear:hover { color: var(--accent, #fc4d50); }
+      .bcs-hist-filter {
+        flex: 1; min-width: 0; margin: 0 12px; padding: 4px 10px;
+        font-size: 12px; font-family: inherit; color: var(--text, #222);
+        background: var(--item-hover, #f5f5f5); border: 1px solid var(--border, #ddd);
+        border-radius: 6px; outline: none;
+      }
+      .bcs-hist-filter:focus { border-color: var(--accent, #fc4d50); }
       .bcs-hist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; }
       .bcs-hist-item { border: none; background: none; padding: 0; cursor: pointer; text-align: left; font-family: inherit; }
       .bcs-hist-item img {
@@ -833,11 +933,40 @@
       }
       .bcs-hist-item:hover .ht { color: var(--accent, #fc4d50); }
       .bcs-hist-item .hd { margin-top: 2px; font-size: 11px; color: var(--muted, #888); }
+      .bcs-hist-item .hm {
+        margin-top: 2px; font-size: 11px; color: var(--muted, #888);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
       .bcs-hist-empty { padding: 32px 0; text-align: center; font-size: 13px; color: var(--muted, #888); }
+      .bcs-hist-sub {
+        margin: 14px 0 8px; font-size: 12px; font-weight: 700;
+        color: var(--muted, #888);
+      }
+      .bcs-hist-item { position: relative; }
+      .bcs-hist-star {
+        position: absolute; top: 6px; right: 6px; width: 22px; height: 22px;
+        display: flex; align-items: center; justify-content: center;
+        border-radius: 50%; background: var(--panel, #fff); color: var(--muted, #999);
+        box-shadow: 0 1px 4px rgba(0,0,0,.2); cursor: pointer;
+        opacity: 0; transition: opacity .12s, color .15s;
+      }
+      .bcs-hist-item:hover .bcs-hist-star { opacity: 1; }
+      .bcs-hist-star.on { opacity: 1; color: var(--accent, #fc4d50); }
+      .bcs-hist-star svg { width: 14px; height: 14px; }
       @media (max-width: 640px) {
         .bcs-modal-top { flex-direction: column; }
         .bcs-media { flex: none; width: 100%; }
       }
+      .cardImgWrap { position: relative; }
+      .bcs-badges {
+        position: absolute; top: 6px; left: 6px; z-index: 5;
+        display: flex; gap: 4px; pointer-events: none;
+      }
+      .bcs-badge {
+        padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 700;
+        background: rgba(0,0,0,.55); color: #fff; backdrop-filter: blur(2px);
+      }
+      .bcs-badge-wish { background: var(--accent, #fc4d50); }
     `);
 
     const TAG_SHOW = 8;
@@ -1026,6 +1155,7 @@
       // Log immediately with card-level data so the entry exists even if the
       // Booth fetch fails (R18); re-logged with better title/image on success.
       pushHistory({ id: seed.id, title: seed.title, img: seed.img });
+      scheduleBadges();
       overlay.innerHTML = `
         <div class="bcs-modal" role="dialog" aria-modal="true">
           <div class="bcs-modal-top">
@@ -1037,7 +1167,10 @@
               <div class="bcs-thumbs" hidden></div>
             </div>
             <div class="bcs-info">
-              <a class="bcs-title" target="_blank" rel="noopener noreferrer"></a>
+              <div class="bcs-title-row">
+                <a class="bcs-title" target="_blank" rel="noopener noreferrer"></a>
+                <button class="bcs-star" type="button" hidden aria-label="收藏"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg></button>
+              </div>
               <div class="bcs-meta"></div>
               <div class="bcs-variations"></div>
               <div class="bcs-tags"></div>
@@ -1062,6 +1195,36 @@
       titleEl.textContent = seed.title || `Booth #${seed.id}`;
       titleEl.href = boothUrl;
       overlay.querySelector(".bcs-buy").href = boothUrl;
+
+      // Star = Booth wish list membership. Hidden until the id set resolves
+      // (stays hidden if that fetch fails); optimistic toggle, reverted with
+      // a hint on failure. Booth item pages get no script star — the native
+      // button is already there.
+      const starBtn = overlay.querySelector(".bcs-star");
+      const paintStar = (on) => {
+        starBtn.classList.toggle("on", on);
+        starBtn.title = on ? "取消收藏（Booth スキ!）" : "收藏（Booth スキ!）";
+      };
+      getWishedIds()
+        .then((set) => {
+          starBtn.hidden = false;
+          paintStar(set.has(String(seed.id)));
+        })
+        .catch(() => {});
+      starBtn.addEventListener("click", () => {
+        const on = !starBtn.classList.contains("on");
+        paintStar(on);
+        starBtn.disabled = true;
+        setWished(seed.id, on)
+          .then(() => scheduleBadges())
+          .catch(() => {
+            paintStar(!on);
+            starBtn.title = "收藏失败（需登录 Booth？）";
+          })
+          .finally(() => {
+            starBtn.disabled = false;
+          });
+      });
 
       // Multi-image nav: filled in once the Booth .json resolves (see below).
       // Dedicated left/right buttons page through images (only shown once
@@ -1225,6 +1388,8 @@
             img: images.length
               ? images[0].resized || images[0].original
               : seed.img,
+            price: item.price || "",
+            shop: (item.shop && item.shop.name) || "",
           });
 
           renderVariations(varEl, item.variations, item.price);
@@ -1285,6 +1450,61 @@
       true,
     );
 
+    // 已看/★ chips on product cards. The SPA re-renders freely, so a
+    // body-level MutationObserver re-runs the pass (rAF-debounced: a burst
+    // of mutations = one pass). The badge container's presence doubles as
+    // the per-card "already processed" marker; hidden-toggles keep state
+    // fresh without re-creating nodes. ★ waits for the wish set; 已看
+    // renders regardless.
+    let wishedBadgeSet = null;
+    let wishedBadgeFetch = false;
+    const subscribeWished = () => {
+      if (wishedBadgeFetch) return;
+      wishedBadgeFetch = true;
+      getWishedIds().then(
+        (s) => {
+          wishedBadgeSet = s;
+          scheduleBadges();
+        },
+        () => {
+          wishedBadgeFetch = false; // retry from a later badge pass
+        },
+      );
+    };
+    subscribeWished();
+    let badgeQueued = false;
+    function scheduleBadges() {
+      if (badgeQueued) return;
+      badgeQueued = true;
+      requestAnimationFrame(() => {
+        badgeQueued = false;
+        if (!wishedBadgeSet) subscribeWished();
+        const seen = new Set(readHistory().map((e) => String(e.id)));
+        document.querySelectorAll(".cardImgWrap").forEach((wrap) => {
+          const card = wrap.closest("li") || wrap.parentElement;
+          const link =
+            card && card.querySelector('a[href*="booth.pm"][href*="/items/"]');
+          const m = link && link.href.match(/\/items\/(\d+)/);
+          if (!m) return;
+          let box = wrap.querySelector(".bcs-badges");
+          if (!box) {
+            box = document.createElement("div");
+            box.className = "bcs-badges";
+            box.innerHTML =
+              '<span class="bcs-badge">已看</span><span class="bcs-badge bcs-badge-wish">★</span>';
+            wrap.appendChild(box);
+          }
+          box.children[0].hidden = !seen.has(m[1]);
+          box.children[1].hidden = !(wishedBadgeSet && wishedBadgeSet.has(m[1]));
+        });
+      });
+    }
+    new MutationObserver(scheduleBadges).observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+    scheduleBadges();
+
     // "Recently viewed" panel behind a fixed corner button. Reuses the
     // overlay stack + .bcs-modal shell; a grid entry reopens the product
     // modal with the stored seed (same shape a card click produces).
@@ -1306,53 +1526,177 @@
       });
       modal.firstElementChild.appendChild(clear);
 
+      const filter = document.createElement("input");
+      filter.type = "search";
+      filter.className = "bcs-hist-filter";
+      filter.placeholder = "筛选标题/店铺…";
+      filter.addEventListener("input", () => applyFilter());
+      modal.firstElementChild.insertBefore(filter, clear);
+
+      const applyFilter = () => {
+        const q = filter.value.trim().toLowerCase();
+        modal.querySelectorAll(".bcs-hist-item").forEach((el) => {
+          el.style.display = !q || (el.dataset.ft || "").includes(q) ? "" : "none";
+        });
+      };
+
       openOverlay(overlay);
 
+      let wished = null; // Set<string> once resolved; null = unknown/hidden
+      getWishedIds()
+        .then((set) => {
+          wished = set;
+          render();
+        })
+        .catch(() => {});
+
+      // One tile for either section. `entry` needs {id,title,img,price,shop,t?}.
+      const makeTile = (entry) => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "bcs-hist-item";
+        item.dataset.ft = `${entry.title || ""} ${entry.shop || ""}`.toLowerCase();
+        const img = document.createElement("img");
+        img.alt = "";
+        img.loading = "lazy";
+        // Grid-sized variant; also normalizes entries written before the
+        // canonical-URL change (which stored a baked 72px variant).
+        if (entry.img) img.src = boothImgVariant(entry.img, HIST_IMG_SPEC);
+        const title = document.createElement("div");
+        title.className = "ht";
+        title.textContent = entry.title || `Booth #${entry.id}`;
+        const meta = document.createElement("div");
+        meta.className = "hm";
+        meta.textContent = [entry.shop, entry.price].filter(Boolean).join(" · ");
+        meta.hidden = !meta.textContent;
+        item.append(img, title, meta);
+        if (entry.t) {
+          const date = document.createElement("div");
+          date.className = "hd";
+          date.textContent = formatDate(entry.t);
+          item.appendChild(date);
+        }
+        if (wished) {
+          const star = document.createElement("span");
+          star.className = `bcs-hist-star${wished.has(String(entry.id)) ? " on" : ""}`;
+          star.innerHTML =
+            '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
+          star.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const on = !star.classList.contains("on");
+            star.classList.toggle("on", on);
+            setWished(entry.id, on).then(
+              () => {
+                render(); // moves the tile between sections
+                scheduleBadges();
+              },
+              () => {
+                star.classList.toggle("on", !on);
+                star.title = "收藏失败（需登录 Booth？）";
+              },
+            );
+          });
+          item.appendChild(star);
+        }
+        item.addEventListener("click", () => {
+          // Stack the product modal ON TOP of the history panel (the
+          // overlay stack routes Escape/backdrop to the topmost), so
+          // closing the modal returns to the list instead of the page.
+          // Seed with the full-size image (strip legacy baked variants) —
+          // the modal stage is far larger than a grid cell — and re-render
+          // the grid on close since the visit just reordered it.
+          openModal(
+            { id: entry.id, title: entry.title, img: boothImgVariant(entry.img) },
+            { onClose: render },
+          );
+        });
+        return item;
+      };
+
+      const WISH_SHOW = 12;
       const render = () => {
-        modal.querySelector(".bcs-hist-grid, .bcs-hist-empty")?.remove();
+        modal
+          .querySelectorAll(".bcs-hist-grid, .bcs-hist-empty, .bcs-hist-sub, .bcs-toggle")
+          .forEach((el) => el.remove());
         const list = readHistory();
         clear.hidden = !list.length;
+
+        // 收藏 strip: ids straight from the wish set (insertion order as the
+        // endpoint returned them). Tile data comes from history when known,
+        // else a placeholder hydrated by the cached item JSON; hydration
+        // failure (R18, deleted) leaves the placeholder — clicking it still
+        // opens the modal, which shows its own login hint.
+        if (wished && wished.size) {
+          const byId = new Map(list.map((e) => [String(e.id), e]));
+          const sub = document.createElement("div");
+          sub.className = "bcs-hist-sub";
+          sub.textContent = "★ 收藏";
+          modal.appendChild(sub);
+          const wgrid = document.createElement("div");
+          wgrid.className = "bcs-hist-grid";
+          const tiles = [...wished].map((id) => {
+            const known = byId.get(id);
+            const tile = makeTile(known || { id, title: "", img: "" });
+            if (!known) {
+              getBoothItem(id).then(
+                (item) => {
+                  tile.querySelector(".ht").textContent = item.name;
+                  tile.dataset.ft = `${item.name} ${(item.shop && item.shop.name) || ""}`.toLowerCase();
+                  const im = item.images && item.images[0];
+                  if (im) {
+                    tile.querySelector("img").src = boothImgVariant(
+                      im.resized || im.original,
+                      HIST_IMG_SPEC,
+                    );
+                  }
+                  applyFilter();
+                },
+                () => {},
+              );
+            }
+            wgrid.appendChild(tile);
+            return tile;
+          });
+          modal.appendChild(wgrid);
+          if (tiles.length > WISH_SHOW) {
+            const hiddenTiles = tiles.slice(WISH_SHOW);
+            const setHidden = (h) =>
+              hiddenTiles.forEach((el) => el.classList.toggle("bcs-var-hidden", h));
+            setHidden(true);
+            const toggle = makeToggle();
+            toggle.querySelector(".bcs-count").textContent = `共 ${tiles.length} 件`;
+            const label = toggle.querySelector(".bcs-label");
+            const sync = (open) => {
+              toggle.classList.toggle("is-open", open);
+              label.textContent = open ? "收起收藏" : `展开其余 ${hiddenTiles.length} 件`;
+            };
+            sync(false);
+            toggle.addEventListener("click", () => {
+              const open = hiddenTiles[0].classList.contains("bcs-var-hidden");
+              setHidden(!open);
+              sync(open);
+            });
+            wgrid.insertAdjacentElement("afterend", toggle);
+          }
+          const sub2 = document.createElement("div");
+          sub2.className = "bcs-hist-sub";
+          sub2.textContent = "最近";
+          modal.appendChild(sub2);
+        }
+
         if (!list.length) {
           const empty = document.createElement("div");
           empty.className = "bcs-hist-empty";
           empty.textContent = "暂无浏览记录";
           modal.appendChild(empty);
+          applyFilter();
           return;
         }
         const grid = document.createElement("div");
         grid.className = "bcs-hist-grid";
-        for (const entry of list) {
-          const item = document.createElement("button");
-          item.type = "button";
-          item.className = "bcs-hist-item";
-          const img = document.createElement("img");
-          img.alt = "";
-          img.loading = "lazy";
-          // Grid-sized variant; also normalizes entries written before the
-          // canonical-URL change (which stored a baked 72px variant).
-          if (entry.img) img.src = boothImgVariant(entry.img, HIST_IMG_SPEC);
-          const title = document.createElement("div");
-          title.className = "ht";
-          title.textContent = entry.title || `Booth #${entry.id}`;
-          const date = document.createElement("div");
-          date.className = "hd";
-          date.textContent = formatDate(entry.t);
-          item.append(img, title, date);
-          item.addEventListener("click", () => {
-            // Stack the product modal ON TOP of the history panel (the
-            // overlay stack routes Escape/backdrop to the topmost), so
-            // closing the modal returns to the list instead of the page.
-            // Seed with the full-size image (strip legacy baked variants) —
-            // the modal stage is far larger than a grid cell — and re-render
-            // the grid on close since the visit just reordered it.
-            openModal(
-              { id: entry.id, title: entry.title, img: boothImgVariant(entry.img) },
-              { onClose: render },
-            );
-          });
-          grid.appendChild(item);
-        }
+        for (const entry of list) grid.appendChild(makeTile(entry));
         modal.appendChild(grid);
+        applyFilter();
       };
       render();
     }
