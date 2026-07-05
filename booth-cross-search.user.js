@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.9.2
+// @version      2.9.4
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -983,6 +983,12 @@
         .bcs-media { flex: none; width: 100%; }
       }
       .cardImgWrap { position: relative; }
+      /* Seen = grey veil over the image; sits under the ★ badge. */
+      .cardImgWrap.bcs-seen::after {
+        content: ""; position: absolute; inset: 0; z-index: 4;
+        background: rgba(90, 90, 90, .55); pointer-events: none;
+        border-radius: inherit;
+      }
       .bcs-badges {
         position: absolute; top: 6px; left: 6px; z-index: 5;
         display: flex; gap: 4px; pointer-events: none;
@@ -1520,6 +1526,9 @@
               '<span class="bcs-badge">已看</span><span class="bcs-badge bcs-badge-wish">★</span>';
             wrap.appendChild(box);
           }
+          // Seen = grey veil over the whole image (class + ::after) plus the
+          // chip — the veil reads at grid-scan distance, the chip labels why.
+          wrap.classList.toggle("bcs-seen", seen.has(m[1]));
           box.children[0].hidden = !seen.has(m[1]);
           box.children[1].hidden = !(wishedBadgeSet && wishedBadgeSet.has(m[1]));
         });

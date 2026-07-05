@@ -105,7 +105,9 @@ which the panel's 收藏 strip renders directly with no per-item fetches. Writes
 `booth.pm/items/<id>/wish_list.json` with a scraped CSRF token (422 → re-scrape,
 retry once). There is no local pin storage — Booth is the source of truth — and the
 item JSON's `wished` field is deliberately NOT persisted (24h cache would go stale).
-Product cards get 已看/★ chips from a rAF-debounced MutationObserver pass.
+Product cards are marked by a rAF-debounced MutationObserver pass: seen items get a
+grey veil over the card image (`.bcs-seen` + `::after`) plus an 已看 chip, wished
+ones a ★ chip.
 
 ### Constraints worth knowing
 
