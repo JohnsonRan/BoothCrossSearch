@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.12.0
+// @version      2.12.1
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -87,10 +87,12 @@
     .bcs-var-hidden { display: none !important; }
   `);
 
+  // One reused textarea rather than one allocation per call — the RipperStore
+  // panel decodes 1-2 strings per result row.
+  const entityDecoder = document.createElement("textarea");
   function decodeEntities(str) {
-    const ta = document.createElement("textarea");
-    ta.innerHTML = str;
-    return ta.value;
+    entityDecoder.innerHTML = str;
+    return entityDecoder.value;
   }
 
   function formatDate(ts) {
@@ -129,6 +131,24 @@
     }));
   }
 
+  // Singleton in-flight promise for a whole-endpoint fetch, memoized until it
+  // rejects: `run` fires at most once, callers share the result, and a
+  // rejection evicts the promise so the next call (or a `fresh` one) can
+  // retry. The endpoint analog of the per-id `memoized()` above.
+  function refetchable(run) {
+    let promise = null;
+    return (fresh) => {
+      if (!promise || fresh) {
+        const p = run().catch((e) => {
+          if (promise === p) promise = null;
+          throw e;
+        });
+        promise = p;
+      }
+      return promise;
+    };
+  }
+
   // ---- Booth wish list ("スキ!") sync. Booth is the single source of
   // truth: star state everywhere = membership in the id set from
   // wish_list_name_items.json (paginated, 20/page — pages are walked to a
@@ -158,44 +178,36 @@
   // endpoint (the history panel does, so likes made on booth.pm show up
   // without a page reload); a failed refresh keeps the previous contents.
   const wishData = { ids: new Set(), byId: new Map(), loggedOut: false };
-  let wishListPromise = null;
-  function getWishList(fresh) {
-    if (!wishListPromise || fresh) {
-      const ids = new Set();
-      const byId = new Map();
-      const done = (loggedOut) => {
-        wishData.loggedOut = !!loggedOut;
-        wishData.ids.clear();
-        wishData.byId.clear();
-        ids.forEach((id) => wishData.ids.add(id));
-        byId.forEach((v, k) => wishData.byId.set(k, v));
-        return wishData;
-      };
-      const fetchPage = (page) =>
-        fetchJson(
-          `https://accounts.booth.pm/wish_list_name_items.json?page=${page}`,
-        ).then(({ status, json }) => {
-          if (status === 401) return done(true); // logged out -> empty
-          if (status !== 200 || !json || !Array.isArray(json.items)) {
-            throw new Error(`wish_list_name_items ${status}`);
-          }
-          for (const it of json.items) {
-            const entry = cardEntry(it);
-            ids.add(entry.id);
-            byId.set(entry.id, entry);
-          }
-          const next = json.pagination && json.pagination.next_page;
-          if (next && next <= WISH_PAGE_CAP) return fetchPage(next);
-          return done(false);
-        });
-      const p = fetchPage(1).catch((e) => {
-        if (wishListPromise === p) wishListPromise = null;
-        throw e;
+  const getWishList = refetchable(() => {
+    const ids = new Set();
+    const byId = new Map();
+    const done = (loggedOut) => {
+      wishData.loggedOut = !!loggedOut;
+      wishData.ids.clear();
+      wishData.byId.clear();
+      ids.forEach((id) => wishData.ids.add(id));
+      byId.forEach((v, k) => wishData.byId.set(k, v));
+      return wishData;
+    };
+    const fetchPage = (page) =>
+      fetchJson(
+        `https://accounts.booth.pm/wish_list_name_items.json?page=${page}`,
+      ).then(({ status, json }) => {
+        if (status === 401) return done(true); // logged out -> empty
+        if (status !== 200 || !json || !Array.isArray(json.items)) {
+          throw new Error(`wish_list_name_items ${status}`);
+        }
+        for (const it of json.items) {
+          const entry = cardEntry(it);
+          ids.add(entry.id);
+          byId.set(entry.id, entry);
+        }
+        const next = json.pagination && json.pagination.next_page;
+        if (next && next <= WISH_PAGE_CAP) return fetchPage(next);
+        return done(false);
       });
-      wishListPromise = p;
-    }
-    return wishListPromise;
-  }
+    return fetchPage(1);
+  });
   function getWishedIds() {
     return getWishList().then((w) => w.ids);
   }
@@ -203,24 +215,15 @@
   // Rails CSRF token, scraped from any booth.pm page and memoized. A 422 on
   // a write means it went stale (or there is no session) — refreshed and
   // retried once by setWished.
-  let csrfPromise = null;
-  function getCsrfToken(fresh) {
-    if (fresh || !csrfPromise) {
-      csrfPromise = gmGet("https://booth.pm/en")
-        .then((res) => {
-          const m = (res.responseText || "").match(
-            /<meta name="csrf-token" content="([^"]+)"/,
-          );
-          if (!m) throw new Error("no csrf token");
-          return m[1];
-        })
-        .catch((e) => {
-          csrfPromise = null;
-          throw e;
-        });
-    }
-    return csrfPromise;
-  }
+  const getCsrfToken = refetchable(() =>
+    gmGet("https://booth.pm/en").then((res) => {
+      const m = (res.responseText || "").match(
+        /<meta name="csrf-token" content="([^"]+)"/,
+      );
+      if (!m) throw new Error("no csrf token");
+      return m[1];
+    }),
+  );
 
   // Authenticated Booth write with the standard Rails dance: CSRF header,
   // and one refresh-and-retry on 422 (stale token / no session).
@@ -410,26 +413,16 @@
   // history, so login state comes from the wish endpoint's 401 instead
   // (wishData.loggedOut). No local copy is kept.
   const histData = { list: [], ids: new Set() };
-  let historyPromise = null;
-  function getHistory(fresh) {
-    if (!historyPromise || fresh) {
-      const p = fetchJson("https://booth.pm/history.json")
-        .then(({ status, json }) => {
-          if (status !== 200 || !Array.isArray(json)) {
-            throw new Error(`history ${status}`);
-          }
-          histData.list = json.map(cardEntry);
-          histData.ids = new Set(histData.list.map((e) => e.id));
-          return histData;
-        })
-        .catch((e) => {
-          if (historyPromise === p) historyPromise = null;
-          throw e;
-        });
-      historyPromise = p;
-    }
-    return historyPromise;
-  }
+  const getHistory = refetchable(() =>
+    fetchJson("https://booth.pm/history.json").then(({ status, json }) => {
+      if (status !== 200 || !Array.isArray(json)) {
+        throw new Error(`history ${status}`);
+      }
+      histData.list = json.map(cardEntry);
+      histData.ids = new Set(histData.list.map((e) => e.id));
+      return histData;
+    }),
+  );
   // Instant local echo for a view made this page load: the modal may serve
   // the item from the 24h persistent cache without ever hitting Booth, so
   // this is also the only "seen" signal for those.
@@ -652,6 +645,42 @@
     return btn;
   }
 
+  // Remove a trailing `.bcs-toggle` left by a previous render, before a
+  // container's overflow list is rebuilt.
+  function removeToggleAfter(el) {
+    const next = el.nextElementSibling;
+    if (next && next.classList.contains("bcs-toggle")) next.remove();
+  }
+
+  // Collapse `items` beyond the first `show` behind a shared expand toggle
+  // inserted after `anchor`. `labels.count` is the header count text;
+  // `labels.collapse` / `labels.expand(hiddenCount)` are the button wording.
+  // `onExpand` (optional) fires when expanding — the Booth variations list
+  // scrolls itself back into view. Every list-collapse site (variations,
+  // tags, wish strip) shares this instead of re-implementing the dance.
+  function attachOverflowToggle(items, show, anchor, labels, onExpand) {
+    const hidden = items.slice(show);
+    const setHidden = (h) =>
+      hidden.forEach((el) => el.classList.toggle("bcs-var-hidden", h));
+    setHidden(true);
+    const toggle = makeToggle();
+    toggle.querySelector(".bcs-count").textContent = labels.count;
+    const label = toggle.querySelector(".bcs-label");
+    const sync = (open) => {
+      toggle.classList.toggle("is-open", open);
+      label.textContent = open ? labels.collapse : labels.expand(hidden.length);
+    };
+    sync(false);
+    toggle.addEventListener("click", () => {
+      const wasHidden = hidden[0].classList.contains("bcs-var-hidden");
+      setHidden(!wasHidden);
+      sync(wasHidden);
+      if (wasHidden && onExpand) onExpand();
+    });
+    anchor.insertAdjacentElement("afterend", toggle);
+    return toggle;
+  }
+
   // Collapse `desc` behind an expand toggle. In "preview" mode (default)
   // it's left alone when already shorter than the preview height, and
   // collapses to a peeking 240px otherwise; the toggle is inserted after
@@ -666,9 +695,12 @@
   //
   // Returns the toggle, or null when preview mode leaves it uncollapsed.
   const DESC_PREVIEW = 240;
+  // Slack over the preview height below which a description isn't worth
+  // collapsing (shared by collapseDesc and the Booth setupDescCollapse gate).
+  const DESC_SLACK = 60;
   function collapseDesc(desc, mode = "preview") {
     const hidden = mode === "hidden";
-    if (!hidden && desc.scrollHeight <= DESC_PREVIEW + 60) return null;
+    if (!hidden && desc.scrollHeight <= DESC_PREVIEW + DESC_SLACK) return null;
     const collapsedClass = hidden ? "bcs-desc-hidden" : "bcs-collapsed";
     desc.classList.add("bcs-desc", collapsedClass);
     const toggle = makeToggle();
@@ -739,7 +771,7 @@
         // Height may read short while React is still filling the block;
         // not settled yet (not a permanent skip) so the observer keeps
         // watching until it does.
-        if (desc.scrollHeight <= DESC_PREVIEW + 60) return false;
+        if (desc.scrollHeight <= DESC_PREVIEW + DESC_SLACK) return false;
         desc.dataset.bcsCollapse = "1";
         collapseDesc(desc);
         return true;
@@ -760,26 +792,17 @@
         return true;
       }
       box.dataset.bcsVar = "1";
-      const hidden = items.slice(VAR_SHOW);
-      const setHidden = (h) =>
-        hidden.forEach((it) => it.classList.toggle("bcs-var-hidden", h));
-      setHidden(true);
-
-      const toggle = makeToggle();
-      toggle.querySelector(".bcs-count").textContent = `共 ${items.length} 件`;
-      const label = toggle.querySelector(".bcs-label");
-      const sync = (open) => {
-        toggle.classList.toggle("is-open", open);
-        label.textContent = open ? "收起商品" : `展开其余 ${hidden.length} 件`;
-      };
-      sync(false);
-      toggle.addEventListener("click", () => {
-        const open = hidden[0].classList.contains("bcs-var-hidden");
-        setHidden(!open);
-        sync(open);
-        if (!open) box.scrollIntoView({ block: "nearest" });
-      });
-      box.insertAdjacentElement("afterend", toggle);
+      attachOverflowToggle(
+        items,
+        VAR_SHOW,
+        box,
+        {
+          count: `共 ${items.length} 件`,
+          collapse: "收起商品",
+          expand: (n) => `展开其余 ${n} 件`,
+        },
+        () => box.scrollIntoView({ block: "nearest" }),
+      );
       return true;
     }
 
@@ -1075,6 +1098,48 @@
 
     const TAG_SHOW = 8;
     const VAR_SHOW = 3;
+    // Filled-star glyph shared by the modal star and the tile stars.
+    const STAR_SVG =
+      '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
+    const WISH_FAIL_MSG = "收藏失败（需登录 Booth？）";
+
+    // Resolve a product card's Booth item id from its .cardImgWrap. Both the
+    // click interceptor and the badge pass depend on this (brittle) SPA
+    // DOM shape, so it lives in one place. Returns {id, card, link} or null.
+    function cardItemId(wrap) {
+      const card = wrap.closest("li") || wrap.parentElement;
+      const link =
+        card && card.querySelector('a[href*="booth.pm"][href*="/items/"]');
+      const m = link && link.href.match(/\/items\/(\d+)/);
+      return m ? { id: m[1], card, link } : null;
+    }
+
+    // Lazy one-shot fetch with a retry gate: `run()` kicks the fetch at most
+    // once, calls `onReady` on success, and on failure clears the in-flight
+    // flag so a later `run()` retries. `get()` returns the resolved value
+    // (or null while pending/failed). Shared by the wished-set and history
+    // badge subscriptions.
+    function lazySubscribe(fetchFn, onReady) {
+      let data = null;
+      let fetching = false;
+      return {
+        run() {
+          if (fetching || data !== null) return;
+          fetching = true;
+          fetchFn().then(
+            (d) => {
+              data = d ?? true;
+              onReady();
+            },
+            () => {
+              fetching = false;
+            },
+          );
+        },
+        get: () => data,
+      };
+    }
+
     const boothCache = new Map();
     const boothStore = persistentStore("booth", 24 * HOUR, 60);
     const getBoothItem = (id) =>
@@ -1134,10 +1199,7 @@
     // number.
     function renderVariations(container, variations, overallPrice) {
       container.innerHTML = "";
-      const nextToggle = container.nextElementSibling;
-      if (nextToggle && nextToggle.classList.contains("bcs-toggle")) {
-        nextToggle.remove();
-      }
+      removeToggleAfter(container);
       if (!variations || variations.length < 2) return;
       const currency = /([A-Z]{3})\s*~?$/.exec(overallPrice || "")?.[1];
       variations.forEach((v) => {
@@ -1157,26 +1219,11 @@
       });
 
       if (variations.length > VAR_SHOW + 1) {
-        const rows = [...container.children];
-        const hidden = rows.slice(VAR_SHOW);
-        const setHidden = (h) =>
-          hidden.forEach((el) => el.classList.toggle("bcs-var-hidden", h));
-        setHidden(true);
-
-        const toggle = makeToggle();
-        toggle.querySelector(".bcs-count").textContent = `共 ${variations.length} 件`;
-        const label = toggle.querySelector(".bcs-label");
-        const sync = (open) => {
-          toggle.classList.toggle("is-open", open);
-          label.textContent = open ? "收起商品" : `展开其余 ${hidden.length} 件`;
-        };
-        sync(false);
-        toggle.addEventListener("click", () => {
-          const open = hidden[0].classList.contains("bcs-var-hidden");
-          setHidden(!open);
-          sync(open);
+        attachOverflowToggle([...container.children], VAR_SHOW, container, {
+          count: `共 ${variations.length} 件`,
+          collapse: "收起商品",
+          expand: (n) => `展开其余 ${n} 件`,
         });
-        container.insertAdjacentElement("afterend", toggle);
       }
     }
 
@@ -1273,7 +1320,7 @@
             <div class="bcs-info">
               <div class="bcs-title-row">
                 <a class="bcs-title" target="_blank" rel="noopener noreferrer"></a>
-                <button class="bcs-star" type="button" hidden aria-label="收藏"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg></button>
+                <button class="bcs-star" type="button" hidden aria-label="收藏">${STAR_SVG}</button>
               </div>
               <div class="bcs-meta"></div>
               <div class="bcs-variations"></div>
@@ -1323,7 +1370,7 @@
           .then(() => scheduleBadges())
           .catch(() => {
             paintStar(!on);
-            starBtn.title = "收藏失败（需登录 Booth？）";
+            starBtn.title = WISH_FAIL_MSG;
           })
           .finally(() => {
             starBtn.disabled = false;
@@ -1405,25 +1452,22 @@
           overlay.querySelector(".bcs-buy").href = item.url || boothUrl;
 
           metaEl.innerHTML = "";
+          const addMeta = (text, cls) => {
+            const s = document.createElement("span");
+            if (cls) s.className = cls;
+            s.textContent = text;
+            metaEl.appendChild(s);
+          };
           if (item.shop && item.shop.name) {
             if (item.shop.url) {
               metaEl.appendChild(makeLink(item.shop.name, item.shop.url));
             } else {
-              const s = document.createElement("span");
-              s.textContent = item.shop.name;
-              metaEl.appendChild(s);
+              addMeta(item.shop.name);
             }
           }
-          if (item.price) {
-            const s = document.createElement("span");
-            s.className = "bcs-price";
-            s.textContent = item.price;
-            metaEl.appendChild(s);
-          }
+          if (item.price) addMeta(item.price, "bcs-price");
           if (typeof item.wish_lists_count === "number") {
-            const s = document.createElement("span");
-            s.textContent = `♥ ${item.wish_lists_count}`;
-            metaEl.appendChild(s);
+            addMeta(`♥ ${item.wish_lists_count}`);
           }
           if (item.category && item.category.name) {
             const text = item.category.parent
@@ -1433,35 +1477,17 @@
           }
 
           tagsEl.innerHTML = "";
-          const nextTagToggle = tagsEl.nextElementSibling;
-          if (nextTagToggle && nextTagToggle.classList.contains("bcs-toggle")) {
-            nextTagToggle.remove();
-          }
+          removeToggleAfter(tagsEl);
           const tags = item.tags || [];
           tags.forEach((tg) => {
             tagsEl.appendChild(makeLink(tg.name, tg.url, "bcs-tag"));
           });
           if (tags.length > TAG_SHOW + 2) {
-            const tagEls = [...tagsEl.children];
-            const hidden = tagEls.slice(TAG_SHOW);
-            const setHidden = (h) =>
-              hidden.forEach((el) => el.classList.toggle("bcs-var-hidden", h));
-            setHidden(true);
-
-            const toggle = makeToggle();
-            toggle.querySelector(".bcs-count").textContent = `共 ${tags.length} 个`;
-            const label = toggle.querySelector(".bcs-label");
-            const sync = (open) => {
-              toggle.classList.toggle("is-open", open);
-              label.textContent = open ? "收起标签" : `展开其余 ${hidden.length} 个标签`;
-            };
-            sync(false);
-            toggle.addEventListener("click", () => {
-              const open = hidden[0].classList.contains("bcs-var-hidden");
-              setHidden(!open);
-              sync(open);
+            attachOverflowToggle([...tagsEl.children], TAG_SHOW, tagsEl, {
+              count: `共 ${tags.length} 个`,
+              collapse: "收起标签",
+              expand: (n) => `展开其余 ${n} 个标签`,
             });
-            tagsEl.insertAdjacentElement("afterend", toggle);
           }
 
           images = (item.images || []).filter((im) => im.original);
@@ -1524,19 +1550,16 @@
         // wraps every slide image in an <a href> (whose default it prevents
         // itself), so treating <a> as "native UI" would swallow every click.
         if (e.target.closest("button")) return;
-        const card = wrap.closest("li") || wrap.parentElement;
-        const link =
-          card && card.querySelector('a[href*="booth.pm"][href*="/items/"]');
-        const m = link && link.href.match(/\/items\/(\d+)/);
-        if (!m) return;
+        const ctx = cardItemId(wrap);
+        if (!ctx) return;
         e.preventDefault();
         e.stopPropagation();
         const img = wrap.querySelector("img");
         // The matched link may be the (text-less) slide-image anchor; the
         // card title lives in .cardTitle.
-        const titleEl = card.querySelector(".cardTitle") || link;
+        const titleEl = ctx.card.querySelector(".cardTitle") || ctx.link;
         openModal({
-          id: m[1],
+          id: ctx.id,
           title: titleEl.textContent.trim(),
           img: img ? img.currentSrc || img.src : "",
         });
@@ -1555,8 +1578,7 @@
       if (tag === "button") star.type = "button";
       star.className = "bcs-tile-star";
       star.dataset.id = id;
-      star.innerHTML =
-        '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
+      star.innerHTML = STAR_SVG;
       star.addEventListener("click", (e) => {
         // Neither the site's delegated handlers nor the card interceptor
         // should react to a star click.
@@ -1568,7 +1590,7 @@
           () => onDone && onDone(),
           () => {
             star.classList.toggle("on", !on);
-            star.title = "收藏失败（需登录 Booth？）";
+            star.title = WISH_FAIL_MSG;
           },
         );
       });
@@ -1581,54 +1603,25 @@
     // the per-card "already processed" marker; hidden-toggles keep state
     // fresh without re-creating nodes. The star waits for the wish set; 已看
     // renders regardless.
-    let wishedBadgeSet = null;
-    let wishedBadgeFetch = false;
-    const subscribeWished = () => {
-      if (wishedBadgeFetch) return;
-      wishedBadgeFetch = true;
-      getWishedIds().then(
-        (s) => {
-          wishedBadgeSet = s;
-          scheduleBadges();
-        },
-        () => {
-          wishedBadgeFetch = false; // retry from a later badge pass
-        },
-      );
-    };
-    subscribeWished();
+    const wishedSub = lazySubscribe(getWishedIds, () => scheduleBadges());
     // Same lazy-retry subscription for the seen set (server history).
-    let histLoaded = false;
-    let histFetch = false;
-    const subscribeHistory = () => {
-      if (histFetch) return;
-      histFetch = true;
-      getHistory().then(
-        () => {
-          histLoaded = true;
-          scheduleBadges();
-        },
-        () => {
-          histFetch = false; // retry from a later badge pass
-        },
-      );
-    };
-    subscribeHistory();
+    const histSub = lazySubscribe(getHistory, () => scheduleBadges());
+    wishedSub.run();
+    histSub.run();
     let badgeQueued = false;
     function scheduleBadges() {
       if (badgeQueued) return;
       badgeQueued = true;
       requestAnimationFrame(() => {
         badgeQueued = false;
-        if (!wishedBadgeSet) subscribeWished();
-        if (!histLoaded) subscribeHistory();
+        wishedSub.run();
+        histSub.run();
+        const wishedBadgeSet = wishedSub.get();
         const seen = histData.ids;
         document.querySelectorAll(".cardImgWrap").forEach((wrap) => {
-          const card = wrap.closest("li") || wrap.parentElement;
-          const link =
-            card && card.querySelector('a[href*="booth.pm"][href*="/items/"]');
-          const m = link && link.href.match(/\/items\/(\d+)/);
-          if (!m) return;
+          const ctx = cardItemId(wrap);
+          if (!ctx) return;
+          const id = ctx.id;
           let box = wrap.querySelector(".bcs-badges");
           if (!box) {
             box = document.createElement("div");
@@ -1638,22 +1631,19 @@
           }
           let star = wrap.querySelector(".bcs-tile-star");
           if (!star) {
-            star = makeTileStar(m[1], "button", scheduleBadges);
+            star = makeTileStar(id, "button", scheduleBadges);
             wrap.appendChild(star);
           }
-          star.dataset.id = m[1]; // the SPA may recycle the wrap for another item
+          star.dataset.id = id; // the SPA may recycle the wrap for another item
           // Seen = grey veil over the whole image (class + ::after) plus the
           // chip — the veil reads at grid-scan distance, the chip labels why.
-          wrap.classList.toggle("bcs-seen", seen.has(m[1]));
-          box.children[0].hidden = !seen.has(m[1]);
+          wrap.classList.toggle("bcs-seen", seen.has(id));
+          box.children[0].hidden = !seen.has(id);
           // The star doubles as the wished indicator: hidden until the wish
           // set resolves (same rule as the modal star), then constant gold
           // when wished, hover-revealed when not.
           star.hidden = !wishedBadgeSet;
-          star.classList.toggle(
-            "on",
-            !!(wishedBadgeSet && wishedBadgeSet.has(m[1])),
-          );
+          star.classList.toggle("on", !!(wishedBadgeSet && wishedBadgeSet.has(id)));
         });
       });
     }
@@ -1930,24 +1920,11 @@
           });
           modal.appendChild(wgrid);
           if (tiles.length > WISH_SHOW) {
-            const hiddenTiles = tiles.slice(WISH_SHOW);
-            const setHidden = (h) =>
-              hiddenTiles.forEach((el) => el.classList.toggle("bcs-var-hidden", h));
-            setHidden(true);
-            const toggle = makeToggle();
-            toggle.querySelector(".bcs-count").textContent = `共 ${tiles.length} 件`;
-            const label = toggle.querySelector(".bcs-label");
-            const sync = (open) => {
-              toggle.classList.toggle("is-open", open);
-              label.textContent = open ? "收起收藏" : `展开其余 ${hiddenTiles.length} 件`;
-            };
-            sync(false);
-            toggle.addEventListener("click", () => {
-              const open = hiddenTiles[0].classList.contains("bcs-var-hidden");
-              setHidden(!open);
-              sync(open);
+            attachOverflowToggle(tiles, WISH_SHOW, wgrid, {
+              count: `共 ${tiles.length} 件`,
+              collapse: "收起收藏",
+              expand: (n) => `展开其余 ${n} 件`,
             });
-            wgrid.insertAdjacentElement("afterend", toggle);
           }
         }
 
