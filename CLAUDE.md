@@ -118,13 +118,18 @@ helper (scraped CSRF token, 422 → re-scrape and retry once) that history clear
 uses. There is no local pin storage — Booth is the source of truth — and the
 item JSON's `wished` field is deliberately NOT persisted (24h cache would go stale).
 Product cards are marked by a rAF-debounced MutationObserver pass that queues only
-new/changed card roots instead of full-scanning the page on every SPA mutation: seen
-items get a grey veil over the card image (`.bcs-seen` + `::after`) plus an 已看 chip;
-each card also gets a clickable wish star (`makeTileStar`, shared with the history
-tiles — hover-revealed when off, constant gold when on, hidden until the wish set resolves).
-The star is a `<button>` so the card click interceptor lets it through, and its item
-id lives on `dataset.id` so a badge pass can re-point a recycled card without
-rebuilding the node.
+new/changed card roots and then reuses a known-card registry for global repaint events
+instead of full-scanning the page on every SPA mutation: seen items get a grey veil
+over the card image (`.bcs-seen` + `::after`) plus an 已看 chip; each card also gets
+a clickable wish star (`makeTileStar`, shared with the history tiles — hover-revealed
+when off, constant gold when on, hidden until the wish set resolves). The star is a
+`<button>` so the card click interceptor lets it through, and its item id lives on
+`dataset.id` so a badge pass can re-point a recycled card without rebuilding the node.
+
+Do not add VRCatalogue card-level batch scanning for external sources (for example,
+automatically checking VRCPirate/RipperStore status across visible cards or
+search-result grids). Keep external source checks item-scoped, such as the existing
+modal/search-bar flow, unless the maintainer explicitly overrides this rule.
 
 ### Constraints worth knowing
 

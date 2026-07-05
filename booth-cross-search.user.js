@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.12.3
+// @version      2.13.0
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -158,9 +158,9 @@
   // lazily and re-walked when the history panel opens. The response carries
   // full item cards, kept in `byId` so the panel's wish strip needs no
   // per-item fetches. Logged out the endpoint 401s — resolved as an empty
-  // list so stars just render unfilled. Endpoints are private — if Booth
-  // changes them only the star feature degrades; search and history are
-  // unaffected.
+  // list so stars just render unfilled. Endpoints are private —
+  // if Booth changes them only the star feature degrades; search and history
+  // are unaffected.
   // Shared projection of a Booth card object (wish + history endpoints
   // return the same shape) down to what the tiles render.
   function cardEntry(it) {
@@ -173,13 +173,28 @@
     };
   }
 
+  function localCardEntry(id, entry = {}, fallbackTitle = `Booth #${id}`) {
+    id = String(id);
+    return {
+      id,
+      title: entry.title || fallbackTitle,
+      img: entry.img || "",
+      price: entry.price || "",
+      shop: entry.shop || "",
+    };
+  }
+
   const WISH_PAGE_CAP = 25;
   // Stable container, mutated in place by every (re)fetch and by setWished:
   // everything holding a reference (badge pass, open modal, panel closures)
   // sees fresh data without re-subscribing. Pass fresh=true to re-walk the
   // endpoint (the history panel does, so likes made on booth.pm show up
   // without a page reload); a failed refresh keeps the previous contents.
-  const wishData = { ids: new Set(), byId: new Map(), loggedOut: false };
+  const wishData = {
+    ids: new Set(),
+    byId: new Map(),
+    loggedOut: false,
+  };
   const getWishList = refetchable(() => {
     const ids = new Set();
     const byId = new Map();
@@ -255,14 +270,20 @@
       });
   }
 
-  function setWished(itemId, on) {
+  function setWished(itemId, on, entry) {
+    const id = String(itemId);
     return boothWrite(
-      `https://booth.pm/items/${itemId}/wish_list.json`,
+      `https://booth.pm/items/${id}/wish_list.json`,
       on ? "POST" : "DELETE",
     ).then(() =>
       getWishedIds().then((set) => {
-        if (on) set.add(String(itemId));
-        else set.delete(String(itemId));
+        if (on) {
+          set.add(id);
+          if (entry) wishData.byId.set(id, localCardEntry(id, entry, ""));
+        } else {
+          set.delete(id);
+          wishData.byId.delete(id);
+        }
       }),
     );
   }
@@ -425,6 +446,8 @@
   }
   // Whitelisted variant sized for the history grid (130px+ cells on hi-DPI).
   const HIST_IMG_SPEC = "c/300x300_a2_g5";
+  // Modal-sized Booth CDN variant; fullscreen zoom still uses originals.
+  const MODAL_IMG_SPEC = "c/620x620";
 
   // "Recently viewed" comes from Booth's own server-side history
   // (booth.pm/history.json, same card shape as the wish endpoint,
@@ -446,9 +469,16 @@
   );
   // Instant local echo for a view made this page load: the modal may serve
   // the item from the 24h persistent cache without ever hitting Booth, so
-  // this is also the only "seen" signal for those.
-  function markSeen(id) {
-    histData.ids.add(String(id));
+  // this is also the only "seen" signal for those. When seed/card data is
+  // available, keep the history panel responsive until the next server refresh.
+  function markSeen(id, entry) {
+    id = String(id);
+    histData.ids.add(id);
+    if (!entry) return;
+    histData.list = [
+      localCardEntry(id, entry),
+      ...histData.list.filter((e) => e.id !== id),
+    ];
   }
   // Server-side wipe: DELETE on the same endpoint empties Booth's history
   // for the whole account (irreversible). A successful clear answers with
@@ -1155,6 +1185,21 @@
       return m ? { id: m[1], card, link } : null;
     }
 
+    function cardEntryFromCard(ctx, id) {
+      if (!ctx || !ctx.card) return null;
+      id = String(id || ctx.id);
+      const wrap = ctx.card.querySelector(".cardImgWrap");
+      const img = wrap && wrap.querySelector("img");
+      const title = ctx.card.querySelector(".cardTitle") || ctx.link;
+      return {
+        id,
+        title: title ? title.textContent.trim() : "",
+        img: img ? boothImgVariant(img.currentSrc || img.src) : "",
+        price: "",
+        shop: "",
+      };
+    }
+
     // Lazy one-shot fetch with a retry gate: `run()` kicks the fetch at most
     // once, calls `onReady` on success, and on failure clears the in-flight
     // flag so a later `run()` retries. `get()` returns the resolved value
@@ -1357,7 +1402,10 @@
       const boothUrl = `https://booth.pm/items/${seed.id}`;
       // Booth records the view server-side (the item JSON fetch below carries
       // cookies); mark it locally too so the veil updates without a refetch.
-      markSeen(seed.id);
+      markSeen(seed.id, {
+        title: seed.title,
+        img: boothImgVariant(seed.img),
+      });
       queueAllBadges();
       overlay.innerHTML = `
         <div class="bcs-modal" role="dialog" aria-modal="true">
@@ -1394,7 +1442,10 @@
       const descEl = overlay.querySelector(".bcs-modal-desc");
 
       // Seed with what the card already shows so the modal never opens blank.
-      if (seed.img) mainImg.src = seed.img;
+      if (seed.img) {
+        mainImg.dataset.fullSrc = boothImgVariant(seed.img);
+        mainImg.src = boothImgVariant(seed.img, MODAL_IMG_SPEC);
+      }
       titleEl.textContent = seed.title || `Booth #${seed.id}`;
       titleEl.href = boothUrl;
       overlay.querySelector(".bcs-buy").href = boothUrl;
@@ -1418,7 +1469,10 @@
         const on = !starBtn.classList.contains("on");
         paintStar(on);
         starBtn.disabled = true;
-        setWished(seed.id, on)
+        setWished(seed.id, on, {
+          title: titleEl.textContent.trim(),
+          img: mainImg.dataset.fullSrc || boothImgVariant(seed.img),
+        })
           .then(() => queueAllBadges())
           .catch(() => {
             paintStar(!on);
@@ -1440,7 +1494,8 @@
         if (!images.length) return;
         thumbEls[idx]?.classList.remove("on");
         idx = (i + images.length) % images.length;
-        mainImg.src = images[idx].original;
+        mainImg.dataset.fullSrc = images[idx].original;
+        mainImg.src = boothImgVariant(images[idx].original, MODAL_IMG_SPEC);
         countEl.textContent = `${idx + 1} / ${images.length}`;
         const activeThumb = thumbEls[idx];
         activeThumb?.classList.add("on");
@@ -1452,7 +1507,9 @@
       nav.right.hidden = true;
       mainImg.addEventListener("click", openZoom);
       function openZoom() {
-        const src = images.length ? images[idx].original : mainImg.src;
+        const src = images.length
+          ? images[idx].original
+          : mainImg.dataset.fullSrc || boothImgVariant(mainImg.src);
         if (!src) return;
         const zoomOverlay = document.createElement("div");
         zoomOverlay.className = "bcs-zoom-overlay";
@@ -1502,6 +1559,12 @@
           titleEl.textContent = item.name;
           titleEl.href = item.url || boothUrl;
           overlay.querySelector(".bcs-buy").href = item.url || boothUrl;
+          markSeen(seed.id, {
+            title: item.name,
+            img: item.images?.[0]?.original || seed.img,
+            price: item.price,
+            shop: item.shop?.name,
+          });
 
           metaEl.replaceChildren();
           const addMeta = (text, cls) => {
@@ -1626,7 +1689,7 @@
     // "button" on cards (the card click interceptor lets buttons through).
     // The item id rides on dataset so a badge pass can re-point a recycled
     // card's star without rebuilding it.
-    function makeTileStar(id, tag, onDone) {
+    function makeTileStar(id, tag, onDone, entry) {
       const star = document.createElement(tag);
       if (tag === "button") star.type = "button";
       star.className = "bcs-tile-star";
@@ -1639,7 +1702,10 @@
         e.stopPropagation();
         const on = !star.classList.contains("on");
         star.classList.toggle("on", on);
-        setWished(star.dataset.id, on).then(
+        const source = star.bcsEntry || entry;
+        const wishEntry =
+          typeof source === "function" ? source(star.dataset.id) : source;
+        setWished(star.dataset.id, on, wishEntry).then(
           () => onDone && onDone(),
           () => {
             star.classList.toggle("on", !on);
@@ -1656,15 +1722,37 @@
     // per-card "already processed" marker; hidden-toggles keep state fresh
     // without re-creating nodes. The star waits for the wish set; 已看 renders
     // once the history set resolves.
+    const BADGE_BATCH_SIZE = 48;
     const badgeRoots = new Set();
+    const badgeWraps = new Set();
+    const knownCardWraps = new Set();
+    const PLUGIN_SURFACE = ".bcs-overlay, .bcs-badges, .bcs-tile-star";
+    const inPluginSurface = (el) =>
+      !!(el && el.closest && el.closest(PLUGIN_SURFACE));
     function queueBadgeRoots(roots) {
       roots.forEach((root) => {
-        if (root && root.nodeType === 1) badgeRoots.add(root);
+        if (root && root.nodeType === 1 && !inPluginSurface(root)) {
+          badgeRoots.add(root);
+        }
+      });
+      scheduleBadges();
+    }
+    function queueBadgeWraps(wraps) {
+      wraps.forEach((wrap) => {
+        if (!wrap || wrap.isConnected === false) {
+          knownCardWraps.delete(wrap);
+          return;
+        }
+        badgeWraps.add(wrap);
       });
       scheduleBadges();
     }
     function queueAllBadges() {
-      queueBadgeRoots([document.body]);
+      if (knownCardWraps.size) {
+        queueBadgeWraps(knownCardWraps);
+      } else {
+        queueBadgeRoots([document.body]);
+      }
     }
     const wishedSub = lazySubscribe(getWishedIds, queueAllBadges);
     // Same lazy-retry subscription for the seen set (server history).
@@ -1677,12 +1765,50 @@
       }
     };
     const collectCardWraps = (root, out) => {
+      if (inPluginSurface(root)) return;
+      const addWrap = (wrap) => {
+        if (!wrap || inPluginSurface(wrap)) return;
+        knownCardWraps.add(wrap);
+        out.add(wrap);
+      };
       const own = root.closest && root.closest(".cardImgWrap");
-      if (own) out.add(own);
+      if (own) addWrap(own);
       if (root.querySelectorAll) {
-        root.querySelectorAll(".cardImgWrap").forEach((wrap) => out.add(wrap));
+        root.querySelectorAll(".cardImgWrap").forEach(addWrap);
       }
     };
+    function paintBadgeWrap(wrap, wishedBadgeSet, seen) {
+      if (wrap.isConnected === false) {
+        knownCardWraps.delete(wrap);
+        return;
+      }
+      const ctx = cardItemId(wrap);
+      if (!ctx) return;
+      const id = ctx.id;
+      let box = wrap.querySelector(".bcs-badges");
+      if (!box) {
+        box = document.createElement("div");
+        box.className = "bcs-badges";
+        box.innerHTML = '<span class="bcs-badge">已看</span>';
+        wrap.appendChild(box);
+      }
+      let star = wrap.querySelector(".bcs-tile-star");
+      if (!star) {
+        star = makeTileStar(id, "button", queueAllBadges);
+        wrap.appendChild(star);
+      }
+      star.dataset.id = id; // the SPA may recycle the wrap for another item
+      star.bcsEntry = () => cardEntryFromCard(cardItemId(wrap), star.dataset.id);
+      // Seen = grey veil over the whole image (class + ::after) plus the
+      // chip — the veil reads at grid-scan distance, the chip labels why.
+      wrap.classList.toggle("bcs-seen", seen.has(id));
+      box.children[0].hidden = !seen.has(id);
+      // The star doubles as the wished indicator: hidden until the wish
+      // set resolves (same rule as the modal star), then constant gold
+      // when wished, hover-revealed when not.
+      star.hidden = !wishedBadgeSet;
+      star.classList.toggle("on", !!(wishedBadgeSet && wishedBadgeSet.has(id)));
+    }
     let badgeQueued = false;
     function scheduleBadges() {
       if (badgeQueued) return;
@@ -1691,45 +1817,32 @@
         badgeQueued = false;
         const roots = [...badgeRoots];
         badgeRoots.clear();
-        if (!roots.length) return;
+        const wraps = new Set(badgeWraps);
+        badgeWraps.clear();
+        if (!roots.length && !wraps.size) return;
         const wishedBadgeSet = wishedSub.get();
         const seen = histData.ids;
-        const wraps = new Set();
         roots.forEach((root) => collectCardWraps(root, wraps));
-        wraps.forEach((wrap) => {
-          const ctx = cardItemId(wrap);
-          if (!ctx) return;
-          const id = ctx.id;
-          let box = wrap.querySelector(".bcs-badges");
-          if (!box) {
-            box = document.createElement("div");
-            box.className = "bcs-badges";
-            box.innerHTML = '<span class="bcs-badge">已看</span>';
-            wrap.appendChild(box);
-          }
-          let star = wrap.querySelector(".bcs-tile-star");
-          if (!star) {
-            star = makeTileStar(id, "button", queueAllBadges);
-            wrap.appendChild(star);
-          }
-          star.dataset.id = id; // the SPA may recycle the wrap for another item
-          // Seen = grey veil over the whole image (class + ::after) plus the
-          // chip — the veil reads at grid-scan distance, the chip labels why.
-          wrap.classList.toggle("bcs-seen", seen.has(id));
-          box.children[0].hidden = !seen.has(id);
-          // The star doubles as the wished indicator: hidden until the wish
-          // set resolves (same rule as the modal star), then constant gold
-          // when wished, hover-revealed when not.
-          star.hidden = !wishedBadgeSet;
-          star.classList.toggle("on", !!(wishedBadgeSet && wishedBadgeSet.has(id)));
-        });
+        const list = [...wraps];
+        let i = 0;
+        const paintBatch = () => {
+          const end = Math.min(i + BADGE_BATCH_SIZE, list.length);
+          for (; i < end; i++) paintBadgeWrap(list[i], wishedBadgeSet, seen);
+          if (i < list.length) requestAnimationFrame(paintBatch);
+        };
+        paintBatch();
       });
     }
     new MutationObserver((mutations) => {
       const roots = [];
       mutations.forEach((m) => {
         m.addedNodes.forEach((node) => {
-          if (node.nodeType === 1) roots.push(node);
+          if (
+            node.nodeType === 1 &&
+            !inPluginSurface(node)
+          ) {
+            roots.push(node);
+          }
         });
       });
       if (roots.length) queueBadgeRoots(roots);
@@ -1976,7 +2089,7 @@
           const star = makeTileStar(entry.id, "span", () => {
             render(); // moves the tile between sections
             queueAllBadges();
-          });
+          }, entry);
           star.classList.toggle("on", wished.has(String(entry.id)));
           thumb.appendChild(star);
         }
