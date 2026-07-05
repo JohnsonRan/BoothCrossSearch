@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.12.2
+// @version      2.12.3
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -836,21 +836,32 @@
       return true;
     }
 
+    const normalizeTitleText = (text) => (text || "").replace(/\s+/g, " ").trim();
+
     function findTitleEl() {
-      const wanted = (ogMeta("title") || document.title).trim();
-      const heads = document.querySelectorAll("h1, h2, h3");
-      for (const h of heads) {
-        const t = h.textContent.trim();
-        if (
+      const wanted = normalizeTitleText(ogMeta("title") || document.title);
+      const itemTitle = normalizeTitleText(wanted.split(" - ")[0]);
+      const matchesTitle = (el) => {
+        const t = normalizeTitleText(el.textContent);
+        return (
           t &&
           (t === wanted ||
-            wanted.startsWith(t) ||
-            t.startsWith(wanted.split(" - ")[0]))
-        ) {
-          return h;
-        }
+            t === itemTitle ||
+            (itemTitle && t.startsWith(itemTitle)))
+        );
+      };
+
+      const detailHeader = document.querySelector("#js-item-info-detail header");
+      if (detailHeader) {
+        const heads = [...detailHeader.querySelectorAll("h1, h2, h3")];
+        return heads.find(matchesTitle) || heads[0] || null;
       }
-      return heads.length ? heads[0] : null;
+
+      const heads = [...document.querySelectorAll("h1, h2, h3")];
+      for (const h of heads) {
+        if (matchesTitle(h)) return h;
+      }
+      return null;
     }
 
     function insertBar() {
