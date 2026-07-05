@@ -97,7 +97,12 @@ item-page visits natively, and vrcatalogue modal opens hit `items/<id>.json` wit
 which Booth also records (a modal open served from the 24h item cache never reaches Booth,
 so `markSeen` echoes it into the in-memory seen set for the card veil). Only vrcatalogue
 shows UI for it: a fixed corner button (`.bcs-hist-fab`) opens a grid panel whose entries
-reopen the product modal; logged out, the panel shows a login hint.
+reopen the product modal; logged out, the panel shows a login hint. The panel's 清空记录
+button wipes the whole account's history via `DELETE booth.pm/history.json` (irreversible,
+so it arms on first click, fires on a confirm click within 3s). A successful clear answers
+with a 302 that `GM_xmlhttpRequest` doesn't follow cleanly (onload with status 0), so
+`clearHistory` treats every non-2xx as ambiguous and verifies by refetching the list —
+empty means cleared.
 
 A star on the vrcatalogue modal and history tiles syncs with the user's real Booth
 wish list ("スキ!"): state is a paginated fetch of
@@ -108,8 +113,9 @@ history panel opens — so likes made on booth.pm appear without a page reload. 
 the similarly-named `wish_lists.json` is a decoy — it returns `{"item_ids":[]}` even
 when logged in. The response carries full item cards (name/price/shop/thumbnail),
 which the panel's 收藏 strip renders directly with no per-item fetches. Writes go to
-`booth.pm/items/<id>/wish_list.json` with a scraped CSRF token (422 → re-scrape,
-retry once). There is no local pin storage — Booth is the source of truth — and the
+`booth.pm/items/<id>/wish_list.json` through `boothWrite` — the shared authenticated-write
+helper (scraped CSRF token, 422 → re-scrape and retry once) that history clearing also
+uses. There is no local pin storage — Booth is the source of truth — and the
 item JSON's `wished` field is deliberately NOT persisted (24h cache would go stale).
 Product cards are marked by a rAF-debounced MutationObserver pass: seen items get a
 grey veil over the card image (`.bcs-seen` + `::after`) plus an 已看 chip, wished
