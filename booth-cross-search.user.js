@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.3
+// @version      2.14.4
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -15,6 +15,8 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @run-at       document-idle
+// @updateURL    https://github.com/JohnsonRan/BoothCrossSearch/raw/main/booth-cross-search.user.js
+// @downloadURL  https://github.com/JohnsonRan/BoothCrossSearch/raw/main/booth-cross-search.user.js
 // ==/UserScript==
 
 (function () {
