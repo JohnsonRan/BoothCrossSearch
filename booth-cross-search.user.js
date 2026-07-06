@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.13.0
+// @version      2.14.0
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -467,14 +467,80 @@
       return histData;
     }),
   );
+  // Local, unbounded-ish view archive: Booth's own history.json only keeps the
+  // newest ~20 items, so anything viewed beyond that falls off the server list
+  // — disappearing from the panel's 最近 section AND losing its card "已看"
+  // veil once evicted. This keeps a private, GM-backed copy of every viewed
+  // item so both survive: it feeds the 更早 panel section (search-only) and is
+  // unioned with histData.ids when painting the veil (`histArchive.has`), so a
+  // card stays greyed out no matter how many items were viewed after it. It
+  // still does NOT feed the panel's default ordering (that stays Booth's 最近
+  // list). Entries are keyed by id and merged on re-view (a later, richer
+  // record overwrites earlier partial seed data) with the view time bumped, so
+  // the archive stays newest-first. Oldest are evicted past ARCHIVE_MAX.
+  const ARCHIVE_KEY = "bcs-hist-archive";
+  const ARCHIVE_MAX = 4000;
+  const histArchive = {
+    // In-memory mirror of the GM blob, parsed once then kept in sync by
+    // record/clear — so a burst of filter keystrokes doesn't re-JSON.parse the
+    // whole archive per render (mirrors persistentStore's lazy single load).
+    _cache: null,
+    _load() {
+      if (!this._cache) this._cache = canStore ? gmReadJson(ARCHIVE_KEY, {}) : {};
+      return this._cache;
+    },
+    // Returns all archived entries, newest-viewed first. Only called when the
+    // filter box is non-empty, so the sort cost stays off the default open.
+    list() {
+      const map = this._load();
+      return Object.keys(map)
+        .map((id) => ({ ...map[id].d, id }))
+        .sort((a, b) => (map[b.id].t || 0) - (map[a.id].t || 0));
+    },
+    // O(1) membership, backing the card veil alongside histData.ids. Reads the
+    // parsed cache (no re-parse per card in a badge batch); false without storage.
+    has(id) {
+      return Object.prototype.hasOwnProperty.call(this._load(), String(id));
+    },
+    record(id, entry) {
+      if (!canStore || !entry) return;
+      id = String(id);
+      const map = this._load();
+      const prev = map[id] && map[id].d;
+      // Merge so a partial seed record ({title,img}) doesn't clobber a richer
+      // one ({title,img,price,shop}) written moments later, or vice-versa.
+      const merged = localCardEntry(id, {
+        title: entry.title || (prev && prev.title),
+        img: entry.img || (prev && prev.img),
+        price: entry.price || (prev && prev.price),
+        shop: entry.shop || (prev && prev.shop),
+      });
+      delete merged.id; // id is the map key; keep the blob lean
+      map[id] = { t: Date.now(), d: merged };
+      const ids = Object.keys(map);
+      if (ids.length > ARCHIVE_MAX) {
+        ids.sort((a, b) => (map[a].t || 0) - (map[b].t || 0));
+        ids.slice(0, ids.length - ARCHIVE_MAX).forEach((old) => delete map[old]);
+      }
+      gmWriteJson(ARCHIVE_KEY, map);
+    },
+    clear() {
+      this._cache = {};
+      if (canStore) gmWriteJson(ARCHIVE_KEY, {});
+    },
+  };
+
   // Instant local echo for a view made this page load: the modal may serve
   // the item from the 24h persistent cache without ever hitting Booth, so
   // this is also the only "seen" signal for those. When seed/card data is
   // available, keep the history panel responsive until the next server refresh.
+  // The same entry also lands in the local archive (histArchive) so it stays
+  // searchable after Booth evicts it from the newest-20 history.json.
   function markSeen(id, entry) {
     id = String(id);
     histData.ids.add(id);
     if (!entry) return;
+    histArchive.record(id, entry);
     histData.list = [
       localCardEntry(id, entry),
       ...histData.list.filter((e) => e.id !== id),
@@ -497,6 +563,7 @@
       .then(() => {
         histData.list = [];
         histData.ids = new Set();
+        histArchive.clear(); // the local mirror goes with the server wipe
       });
   }
 
@@ -1801,8 +1868,12 @@
       star.bcsEntry = () => cardEntryFromCard(cardItemId(wrap), star.dataset.id);
       // Seen = grey veil over the whole image (class + ::after) plus the
       // chip — the veil reads at grid-scan distance, the chip labels why.
-      wrap.classList.toggle("bcs-seen", seen.has(id));
-      box.children[0].hidden = !seen.has(id);
+      // Union of the live server set (newest ~20 + this-session views) and the
+      // local archive, so a card viewed long ago stays greyed even after Booth
+      // pushed it off history.json.
+      const isSeen = seen.has(id) || histArchive.has(id);
+      wrap.classList.toggle("bcs-seen", isSeen);
+      box.children[0].hidden = !isSeen;
       // The star doubles as the wished indicator: hidden until the wish
       // set resolves (same rule as the modal star), then constant gold
       // when wished, hover-revealed when not.
@@ -2163,6 +2234,18 @@
           : [];
         const histEntries = list.filter((entry) => matchesQuery(entry, q));
         const hasWish = !!wishEntries.length;
+        // 更早: local archive matches, but only what Booth already evicted from
+        // 最近 (excluded by histData.ids) so the two grids never double up. Only
+        // built when filtering — an empty query keeps the archive out of the
+        // default view, so it never touches the panel's normal ordering.
+        const archiveEntries = q
+          ? histArchive
+              .list()
+              .filter(
+                (entry) =>
+                  !histData.ids.has(String(entry.id)) && matchesQuery(entry, q),
+              )
+          : [];
 
         // Both lists need a Booth session; the wish endpoint's 401 is the
         // only reliable logged-out signal (history.json returns [] either
@@ -2174,7 +2257,7 @@
           return;
         }
 
-        if (q && !wishEntries.length && !histEntries.length) {
+        if (q && !wishEntries.length && !histEntries.length && !archiveEntries.length) {
           const message =
             histState === "loading" && !list.length
               ? "加载中…"
@@ -2216,17 +2299,37 @@
           modal.appendChild(sub2);
         }
 
-        if (!histEntries.length) {
-          if (q) return;
+        if (histEntries.length) {
+          const grid = document.createElement("div");
+          grid.className = "bcs-hist-grid";
+          modal.appendChild(grid);
+          const frag = document.createDocumentFragment();
+          for (const entry of histEntries) frag.appendChild(makeTile(entry));
+          grid.appendChild(frag);
+        } else if (!q) {
+          // No filter and no 最近 rows: the only reason to be here is an empty
+          // (or still-loading) server history — say so and stop. With a query
+          // present, fall through so the 更早 archive section can still render.
           modal.appendChild(makeHistoryEmpty(historyEmptyMessage()));
           return;
         }
-        const grid = document.createElement("div");
-        grid.className = "bcs-hist-grid";
-        modal.appendChild(grid);
-        const frag = document.createDocumentFragment();
-        for (const entry of histEntries) frag.appendChild(makeTile(entry));
-        grid.appendChild(frag);
+
+        // 更早（本地历史）: items that fell off Booth's newest-20 window but are
+        // still in the local archive. Search-only, lazy-rendered like 收藏.
+        if (archiveEntries.length) {
+          const sub3 = document.createElement("div");
+          sub3.className = "bcs-hist-sub";
+          sub3.textContent = "更早（本地历史）";
+          modal.appendChild(sub3);
+          const agrid = document.createElement("div");
+          agrid.className = "bcs-hist-grid";
+          modal.appendChild(agrid);
+          renderLazyTiles(agrid, archiveEntries, WISH_SHOW, makeTile, {
+            count: `共 ${archiveEntries.length} 件`,
+            collapse: "收起更早",
+            expand: (n) => `展开其余 ${n} 件`,
+          });
+        }
       };
       render();
     }

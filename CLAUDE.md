@@ -92,14 +92,25 @@ the fields the modal renders before caching, to keep the persistent blob small.
 
 "Recently viewed" is Booth's own server-side history (`booth.pm/history.json`, same card
 shape as the wish endpoint, unpaginated; 200 + `[]` when logged out — login state is
-disambiguated via the wish endpoint's 401 instead). There is no local copy: Booth records
-item-page visits natively, and vrcatalogue modal opens hit `items/<id>.json` with cookies,
-which Booth also records (a modal open served from the 24h item cache never reaches Booth,
-so `markSeen` echoes it into the in-memory seen set for the card veil). Only vrcatalogue
-shows UI for it: a fixed corner button (`.bcs-hist-fab`) opens a grid panel whose entries
-reopen the product modal; logged out, the panel shows a login hint. The panel's 清空记录
+disambiguated via the wish endpoint's 401 instead). Booth records item-page visits natively,
+and vrcatalogue modal opens hit `items/<id>.json` with cookies, which Booth also records (a
+modal open served from the 24h item cache never reaches Booth, so `markSeen` echoes it into
+the in-memory seen set for the card veil). Booth's list only keeps the newest ~20, so
+`markSeen` also mirrors every view into a local, GM-backed archive (`histArchive`, one
+`bcs-hist-archive` blob, no TTL, oldest-evicted past 4000, records merged per id so a partial
+seed doesn't clobber a richer later record). The archive serves two things: it feeds a
+更早（本地历史）panel section (search-only — rendered solely when a filter query is present,
+excluding ids already in 最近), and it backs the card 已看 veil. The veil paints on the
+**union** of `histData.ids` (server newest ~20 + this-session views) and `histArchive.has(id)`
+(everything ever opened via the modal), so a card stays greyed no matter how many items were
+viewed after it — the union matters because Booth's server list can include booth.pm/other-device
+views that this device's `markSeen` never archived, and vice-versa. The archive still does NOT
+feed the panel's default ordering (that stays Booth's 最近 list). Only
+vrcatalogue shows UI for the panel: a fixed corner button (`.bcs-hist-fab`) opens a grid whose
+entries reopen the product modal; logged out, the panel shows a login hint. The panel's 清空记录
 button wipes the whole account's history via `DELETE booth.pm/history.json` (irreversible,
-so it arms on first click, fires on a confirm click within 3s). A successful clear answers
+so it arms on first click, fires on a confirm click within 3s) and clears the local archive
+alongside it (so the veils come off too). A successful clear answers
 with a 302 that `GM_xmlhttpRequest` doesn't follow cleanly (onload with status 0), so
 `clearHistory` treats every non-2xx as ambiguous and verifies by refetching the list —
 empty means cleared.
