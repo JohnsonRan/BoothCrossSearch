@@ -93,9 +93,11 @@ the fields the modal renders before caching, to keep the persistent blob small.
 "Recently viewed" is Booth's own server-side history (`booth.pm/history.json`, same card
 shape as the wish endpoint, unpaginated; 200 + `[]` when logged out — login state is
 disambiguated via the wish endpoint's 401 instead). Booth records item-page visits natively,
-and vrcatalogue modal opens hit `items/<id>.json` with cookies, which Booth also records (a
-modal open served from the 24h item cache never reaches Booth, so `markSeen` echoes it into
-the in-memory seen set for the card veil). Booth's list only keeps the newest ~20, so
+and vrcatalogue modal opens hit `items/<id>.json` with cookies, which Booth also records. A
+modal open served from the in-memory or 24h item cache would skip that fetch and never reach
+Booth, so `openModal` fires a fire-and-forget cookied ping (`pingBoothViewIfCached`) on a cache
+hit to still register the view server-side; separately, `markSeen` echoes every open into the
+in-memory seen set so the card veil updates without waiting on a server refetch. Booth's list only keeps the newest ~20, so
 `markSeen` also mirrors every view into a local, GM-backed archive (`histArchive`, one
 `bcs-hist-archive` blob, no TTL, oldest-evicted past 4000, records merged per id so a partial
 seed doesn't clobber a richer later record). The archive serves two things: it feeds a

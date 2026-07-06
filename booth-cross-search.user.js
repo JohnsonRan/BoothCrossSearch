@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.0
+// @version      2.14.3
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -313,6 +313,16 @@
     }
   }
 
+  // Evict oldest-written entries (by their `.t` timestamp) until `map` holds at
+  // most `max`. Shared by every GM blob that caps its size — the per-source
+  // persistentStore and the history archive both keep the same {t,d} shape.
+  function evictOldest(map, max) {
+    const ids = Object.keys(map);
+    if (ids.length <= max) return;
+    ids.sort((a, b) => (map[a].t || 0) - (map[b].t || 0));
+    ids.slice(0, ids.length - max).forEach((old) => delete map[old]);
+  }
+
   // TTL'd per-item cache persisted as one JSON blob per source under a
   // `bcs-cache-<name>` GM value. Expired entries are pruned once on first
   // load; `max` caps the blob by evicting oldest-written entries so a long
@@ -339,11 +349,7 @@
       set(id, d) {
         const map = load();
         map[id] = { t: Date.now(), d };
-        const ids = Object.keys(map);
-        if (ids.length > max) {
-          ids.sort((a, b) => map[a].t - map[b].t);
-          ids.slice(0, ids.length - max).forEach((old) => delete map[old]);
-        }
+        evictOldest(map, max);
         gmWriteJson(key, map);
       },
     };
@@ -485,6 +491,10 @@
     // record/clear — so a burst of filter keystrokes doesn't re-JSON.parse the
     // whole archive per render (mirrors persistentStore's lazy single load).
     _cache: null,
+    // Memoized newest-first array from list(); invalidated on record/clear so a
+    // burst of filter keystrokes reuses one sort instead of re-spreading and
+    // re-sorting the whole archive (up to ARCHIVE_MAX entries) every render.
+    _sorted: null,
     _load() {
       if (!this._cache) this._cache = canStore ? gmReadJson(ARCHIVE_KEY, {}) : {};
       return this._cache;
@@ -492,10 +502,12 @@
     // Returns all archived entries, newest-viewed first. Only called when the
     // filter box is non-empty, so the sort cost stays off the default open.
     list() {
+      if (this._sorted) return this._sorted;
       const map = this._load();
-      return Object.keys(map)
+      this._sorted = Object.keys(map)
         .map((id) => ({ ...map[id].d, id }))
         .sort((a, b) => (map[b.id].t || 0) - (map[a.id].t || 0));
+      return this._sorted;
     },
     // O(1) membership, backing the card veil alongside histData.ids. Reads the
     // parsed cache (no re-parse per card in a badge batch); false without storage.
@@ -517,15 +529,13 @@
       });
       delete merged.id; // id is the map key; keep the blob lean
       map[id] = { t: Date.now(), d: merged };
-      const ids = Object.keys(map);
-      if (ids.length > ARCHIVE_MAX) {
-        ids.sort((a, b) => (map[a].t || 0) - (map[b].t || 0));
-        ids.slice(0, ids.length - ARCHIVE_MAX).forEach((old) => delete map[old]);
-      }
+      evictOldest(map, ARCHIVE_MAX);
+      this._sorted = null; // order changed — list() rebuilds lazily
       gmWriteJson(ARCHIVE_KEY, map);
     },
     clear() {
       this._cache = {};
+      this._sorted = null;
       if (canStore) gmWriteJson(ARCHIVE_KEY, {});
     },
   };
@@ -593,11 +603,7 @@
       panel.appendChild(empty);
     } else {
       for (const e of entries) {
-        const a = document.createElement("a");
-        a.className = "bcs-panel-item";
-        a.href = e.url;
-        a.target = "_blank";
-        a.rel = "noopener noreferrer";
+        const a = makeLink("", e.url, "bcs-panel-item");
         const title = document.createElement("span");
         title.className = "t";
         title.textContent = e.title;
@@ -717,13 +723,7 @@
     bar.appendChild(ripperBtn);
 
     function addWarn(text, url) {
-      const warn = document.createElement("a");
-      warn.className = "bcs-warn";
-      warn.textContent = text;
-      warn.href = url;
-      warn.target = "_blank";
-      warn.rel = "noopener noreferrer";
-      bar.appendChild(warn);
+      bar.appendChild(makeLink(text, url, "bcs-warn"));
     }
 
     // Decides whether each button gets enabled, and colors its dot either way.
@@ -779,6 +779,22 @@
     if (next && next.classList.contains("bcs-toggle")) next.remove();
   }
 
+  // makeToggle wired for an overflow list: sets the header count and returns
+  // the button plus a sync(open) that flips `.is-open` and swaps the
+  // collapse/expand wording. Callers own only their reveal mechanism (hide
+  // rows vs lazily append) and the click handler; `hiddenCount` is what
+  // `labels.expand(n)` reports.
+  function makeCountToggle(labels, hiddenCount) {
+    const toggle = makeToggle();
+    toggle.querySelector(".bcs-count").textContent = labels.count;
+    const label = toggle.querySelector(".bcs-label");
+    const sync = (open) => {
+      toggle.classList.toggle("is-open", open);
+      label.textContent = open ? labels.collapse : labels.expand(hiddenCount);
+    };
+    return { toggle, sync };
+  }
+
   // Collapse `items` beyond the first `show` behind a shared expand toggle
   // inserted after `anchor`. `labels.count` is the header count text;
   // `labels.collapse` / `labels.expand(hiddenCount)` are the button wording.
@@ -790,13 +806,7 @@
     const setHidden = (h) =>
       hidden.forEach((el) => el.classList.toggle("bcs-var-hidden", h));
     setHidden(true);
-    const toggle = makeToggle();
-    toggle.querySelector(".bcs-count").textContent = labels.count;
-    const label = toggle.querySelector(".bcs-label");
-    const sync = (open) => {
-      toggle.classList.toggle("is-open", open);
-      label.textContent = open ? labels.collapse : labels.expand(hidden.length);
-    };
+    const { toggle, sync } = makeCountToggle(labels, hidden.length);
     sync(false);
     toggle.addEventListener("click", () => {
       const wasHidden = hidden[0].classList.contains("bcs-var-hidden");
@@ -807,6 +817,17 @@
     anchor.insertAdjacentElement("afterend", toggle);
     return toggle;
   }
+
+  // Purchasable-variations collapse: show the first VAR_SHOW rows, hide the
+  // rest behind an overflow toggle. Shared by both entry points (the Booth
+  // item page and the vrcatalogue modal) so the count and wording stay in
+  // sync rather than being copied into each closure.
+  const VAR_SHOW = 3;
+  const variationLabels = (count) => ({
+    count: `共 ${count} 件`,
+    collapse: "收起商品",
+    expand: (n) => `展开其余 ${n} 件`,
+  });
 
   // Collapse `desc` behind an expand toggle. In "preview" mode (default)
   // it's left alone when already shorter than the preview height, and
@@ -908,7 +929,6 @@
     // Collapse the purchasable-variations list (.variations, one
     // .variation-item per row) down to the first few rows behind an expand
     // button. Skips short lists where hiding a row or two isn't worth it.
-    const VAR_SHOW = 3;
     function setupVariationsCollapse() {
       const box = document.querySelector(".variations");
       if (!box) return false;
@@ -923,11 +943,7 @@
         items,
         VAR_SHOW,
         box,
-        {
-          count: `共 ${items.length} 件`,
-          collapse: "收起商品",
-          expand: (n) => `展开其余 ${n} 件`,
-        },
+        variationLabels(items.length),
         () => box.scrollIntoView({ block: "nearest" }),
       );
       return true;
@@ -955,10 +971,7 @@
       }
 
       const heads = [...document.querySelectorAll("h1, h2, h3")];
-      for (const h of heads) {
-        if (matchesTitle(h)) return h;
-      }
-      return null;
+      return heads.find(matchesTitle) || null;
     }
 
     function insertBar() {
@@ -987,8 +1000,18 @@
     }
 
     if (!init()) {
+      // Coalesce mutation bursts into one init() per frame (like the
+      // vrcatalogue badge observer): React streams the item page in, and an
+      // unbatched init() re-runs findTitleEl's querySelectorAll plus the
+      // description's scrollHeight/offsetParent reflow on every mutation.
+      let scheduled = false;
       const mo = new MutationObserver(() => {
-        if (init()) mo.disconnect();
+        if (scheduled) return;
+        scheduled = true;
+        requestAnimationFrame(() => {
+          scheduled = false;
+          if (init()) mo.disconnect();
+        });
       });
       mo.observe(document.body, { childList: true, subtree: true });
       setTimeout(() => mo.disconnect(), 15000);
@@ -1018,7 +1041,12 @@
       .bcs-modal::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
       .bcs-modal:hover::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, #ccc); }
       .bcs-modal:hover::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover, #bbb); }
-      .bcs-modal-top { display: flex; gap: 20px; align-items: flex-start; }
+      /* margin-bottom keeps a gap above the (sticky, margin-top:0) description
+         toggle even when the info column (variations + tags) grows taller than
+         the image — otherwise 去 Booth 购买 sits flush at the column bottom and
+         the toggle butts against it. It rides on modal-top rather than the
+         toggle so it scrolls away when the toggle sticks, keeping it flush. */
+      .bcs-modal-top { display: flex; gap: 20px; align-items: flex-start; margin-bottom: 16px; }
       .bcs-media { flex: 0 0 46%; min-width: 0; }
       .bcs-img-stage { position: relative; }
       .bcs-main-img {
@@ -1235,7 +1263,6 @@
     `);
 
     const TAG_SHOW = 8;
-    const VAR_SHOW = 3;
     // Filled-star glyph shared by the modal star and the tile stars.
     const STAR_SVG =
       '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
@@ -1349,6 +1376,19 @@
       );
     }
 
+    // Booth logs a server-side view when items/<id>.json is fetched with the
+    // user's cookies. getBoothItem's fetch does that on a cache miss, but a
+    // cache hit (in-memory boothCache or the 24h boothStore) skips the network,
+    // so the open is recorded locally by markSeen yet never reaches Booth's own
+    // 已看 list. When cached, fire a cookied fire-and-forget GET so Booth's list
+    // stays in sync — cheap, since modal opens are user clicks, not scans. Must
+    // run before getBoothItem, which populates boothCache for every id.
+    function pingBoothViewIfCached(id) {
+      if (boothCache.has(id) || boothStore.get(id) !== undefined) {
+        gmGet(`https://booth.pm/en/items/${id}.json`).catch(() => {});
+      }
+    }
+
     // Render the item's purchasable variations (name + price) — booth.pm
     // items with >1 price tier (e.g. base + support) don't otherwise surface
     // that in the modal, which only shows the single `item.price` summary.
@@ -1380,11 +1420,12 @@
       }
 
       if (variations.length > VAR_SHOW + 1) {
-        attachOverflowToggle([...container.children], VAR_SHOW, container, {
-          count: `共 ${variations.length} 件`,
-          collapse: "收起商品",
-          expand: (n) => `展开其余 ${n} 件`,
-        });
+        attachOverflowToggle(
+          [...container.children],
+          VAR_SHOW,
+          container,
+          variationLabels(variations.length),
+        );
       }
     }
 
@@ -1434,7 +1475,6 @@
         if (closeOnAnyClick || e.target === el) entry.close();
       });
       document.body.appendChild(el);
-      return entry.close;
     }
 
     // Prev/next arrow buttons, shared by the modal (.bcs-nav, inside the image)
@@ -1467,11 +1507,14 @@
       const overlay = document.createElement("div");
       overlay.className = "bcs-overlay";
       const boothUrl = `https://booth.pm/items/${seed.id}`;
+      // Canonical full-size seed image, computed once and reused — the modal
+      // seed, the star entry, and markSeen all want the same bare URL.
+      const seedFull = boothImgVariant(seed.img);
       // Booth records the view server-side (the item JSON fetch below carries
       // cookies); mark it locally too so the veil updates without a refetch.
       markSeen(seed.id, {
         title: seed.title,
-        img: boothImgVariant(seed.img),
+        img: seedFull,
       });
       queueAllBadges();
       overlay.innerHTML = `
@@ -1510,8 +1553,8 @@
 
       // Seed with what the card already shows so the modal never opens blank.
       if (seed.img) {
-        mainImg.dataset.fullSrc = boothImgVariant(seed.img);
-        mainImg.src = boothImgVariant(seed.img, MODAL_IMG_SPEC);
+        mainImg.dataset.fullSrc = seedFull;
+        mainImg.src = boothImgVariant(seedFull, MODAL_IMG_SPEC);
       }
       titleEl.textContent = seed.title || `Booth #${seed.id}`;
       titleEl.href = boothUrl;
@@ -1538,7 +1581,7 @@
         starBtn.disabled = true;
         setWished(seed.id, on, {
           title: titleEl.textContent.trim(),
-          img: mainImg.dataset.fullSrc || boothImgVariant(seed.img),
+          img: mainImg.dataset.fullSrc || seedFull,
         })
           .then(() => queueAllBadges())
           .catch(() => {
@@ -1620,6 +1663,10 @@
 
       openOverlay(overlay, { onArrow: stepImage, onClose });
 
+      // Register the view with Booth even when the item JSON is served from
+      // cache (see pingBoothViewIfCached), so it lands in Booth's 已看 list and
+      // not only the local archive.
+      pingBoothViewIfCached(seed.id);
       getBoothItem(seed.id)
         .then((item) => {
           if (!overlay.isConnected) return;
@@ -1737,15 +1784,10 @@
         if (!ctx) return;
         e.preventDefault();
         e.stopPropagation();
-        const img = wrap.querySelector("img");
-        // The matched link may be the (text-less) slide-image anchor; the
-        // card title lives in .cardTitle.
-        const titleEl = ctx.card.querySelector(".cardTitle") || ctx.link;
-        openModal({
-          id: ctx.id,
-          title: titleEl.textContent.trim(),
-          img: img ? img.currentSrc || img.src : "",
-        });
+        // cardEntryFromCard owns the (brittle) SPA-DOM extraction — the same
+        // .cardTitle||link title and wrap image the modal seed needs, so a
+        // markup change only has to be fixed in one place.
+        openModal(cardEntryFromCard(ctx));
       },
       true,
     );
@@ -1822,8 +1864,6 @@
       }
     }
     const wishedSub = lazySubscribe(getWishedIds, queueAllBadges);
-    // Same lazy-retry subscription for the seen set (server history).
-    const histSub = lazySubscribe(getHistory, queueAllBadges);
     const runWhenIdle = (fn) => {
       if (typeof requestIdleCallback === "function") {
         requestIdleCallback(fn, { timeout: 1500 });
@@ -1924,7 +1964,10 @@
     queueAllBadges();
     runWhenIdle(() => {
       wishedSub.run();
-      histSub.run();
+      // The seen veil reads the histData.ids global (in scheduleBadges), not a
+      // synchronous accessor, so history needs no lazySubscribe wrapper —
+      // getHistory is already single-in-flight and retries on reject.
+      getHistory().then(queueAllBadges).catch(() => {});
     });
 
     // "Recently viewed" panel behind a fixed corner button. Reuses the
@@ -1937,6 +1980,12 @@
       modal.className = "bcs-modal";
       modal.innerHTML = '<div class="bcs-hist-head"><span>最近看过</span></div>';
       overlay.appendChild(modal);
+      // Sections (收藏 / 最近 / 更早 grids + headers) live in this body so a
+      // re-render just replaceChildren()s it — no need to enumerate every class
+      // render() might have appended. The head (title + filter) persists.
+      const body = document.createElement("div");
+      body.className = "bcs-hist-body";
+      modal.append(body);
 
       const filterWrap = document.createElement("div");
       filterWrap.className = "bcs-filter-wrap";
@@ -2099,12 +2148,11 @@
         if (histState === "fail") return "历史加载失败，稍后再试";
         return "暂无浏览记录";
       }
-      function emptyWishEntry(id) {
-        return { id, title: "", img: "", price: "", shop: "" };
-      }
       function wishEntryFor(id, historyById) {
         return (
-          (wishInfo && wishInfo.get(id)) || historyById.get(id) || emptyWishEntry(id)
+          (wishInfo && wishInfo.get(id)) ||
+          historyById.get(id) ||
+          localCardEntry(id, {}, "")
         );
       }
       // fresh: both lists live on Booth's servers now — refetch on every
@@ -2133,10 +2181,6 @@
         const item = document.createElement("button");
         item.type = "button";
         item.className = "bcs-hist-item";
-        item.dataset.ft = [entry.title, entry.shop, entry.price]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
         const img = document.createElement("img");
         img.alt = "";
         img.loading = "lazy";
@@ -2200,14 +2244,8 @@
         if (entries.length <= show) return;
 
         let open = false;
-        const toggle = makeToggle();
-        toggle.querySelector(".bcs-count").textContent = labels.count;
-        const label = toggle.querySelector(".bcs-label");
-        const sync = () => {
-          toggle.classList.toggle("is-open", open);
-          label.textContent = open ? labels.collapse : labels.expand(entries.length - show);
-        };
-        sync();
+        const { toggle, sync } = makeCountToggle(labels, entries.length - show);
+        sync(false);
         toggle.addEventListener("click", () => {
           if (open) {
             while (container.children.length > show) container.lastElementChild.remove();
@@ -2216,14 +2254,12 @@
             appendRange(show, entries.length);
             open = true;
           }
-          sync();
+          sync(open);
         });
         container.insertAdjacentElement("afterend", toggle);
       }
       const render = () => {
-        modal
-          .querySelectorAll(".bcs-hist-grid, .bcs-hist-empty, .bcs-hist-sub, .bcs-toggle")
-          .forEach((el) => el.remove());
+        body.replaceChildren();
         const list = histData.list;
         const q = filter.value.trim().toLowerCase();
         const byId = new Map(list.map((e) => [String(e.id), e]));
@@ -2251,7 +2287,7 @@
         // only reliable logged-out signal (history.json returns [] either
         // way), so one hint replaces both sections.
         if (wishData.loggedOut) {
-          modal.appendChild(
+          body.appendChild(
             makeHistoryEmpty("未登录 Booth — 登录后这里会显示最近看过与收藏"),
           );
           return;
@@ -2262,7 +2298,7 @@
             histState === "loading" && !list.length
               ? "加载中…"
               : "没有匹配的收藏或历史";
-          modal.appendChild(makeHistoryEmpty(message));
+          body.appendChild(makeHistoryEmpty(message));
           return;
         }
 
@@ -2274,10 +2310,10 @@
           const sub = document.createElement("div");
           sub.className = "bcs-hist-sub";
           sub.textContent = "★ 收藏";
-          modal.appendChild(sub);
+          body.appendChild(sub);
           const wgrid = document.createElement("div");
           wgrid.className = "bcs-hist-grid";
-          modal.appendChild(wgrid);
+          body.appendChild(wgrid);
           renderLazyTiles(wgrid, wishEntries, WISH_SHOW, makeTile, {
             count: `共 ${wishEntries.length} 件`,
             collapse: "收起收藏",
@@ -2296,13 +2332,13 @@
           label.textContent = "最近";
           sub2.append(label);
           if (list.length) sub2.append(clearBtn);
-          modal.appendChild(sub2);
+          body.appendChild(sub2);
         }
 
         if (histEntries.length) {
           const grid = document.createElement("div");
           grid.className = "bcs-hist-grid";
-          modal.appendChild(grid);
+          body.appendChild(grid);
           const frag = document.createDocumentFragment();
           for (const entry of histEntries) frag.appendChild(makeTile(entry));
           grid.appendChild(frag);
@@ -2310,7 +2346,7 @@
           // No filter and no 最近 rows: the only reason to be here is an empty
           // (or still-loading) server history — say so and stop. With a query
           // present, fall through so the 更早 archive section can still render.
-          modal.appendChild(makeHistoryEmpty(historyEmptyMessage()));
+          body.appendChild(makeHistoryEmpty(historyEmptyMessage()));
           return;
         }
 
@@ -2320,10 +2356,10 @@
           const sub3 = document.createElement("div");
           sub3.className = "bcs-hist-sub";
           sub3.textContent = "更早（本地历史）";
-          modal.appendChild(sub3);
+          body.appendChild(sub3);
           const agrid = document.createElement("div");
           agrid.className = "bcs-hist-grid";
-          modal.appendChild(agrid);
+          body.appendChild(agrid);
           renderLazyTiles(agrid, archiveEntries, WISH_SHOW, makeTile, {
             count: `共 ${archiveEntries.length} 件`,
             collapse: "收起更早",
