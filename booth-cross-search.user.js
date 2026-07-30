@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.4
+// @version      2.14.5
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -315,6 +315,39 @@
     }
   }
 
+  // Coalesce bursty GM writes (modal open → markSeen + search caches) into one
+  // stringify per key. Memory maps update immediately; disk catches up after a
+  // short quiet period, or sooner when the tab hides / unloads so a crashy
+  // close still keeps recent views.
+  const STORE_FLUSH_MS = 400;
+  const pendingGmWrites = new Map(); // key -> { value, timer }
+  function gmWriteJsonDeferred(key, value) {
+    if (!canStore) return;
+    let entry = pendingGmWrites.get(key);
+    if (!entry) {
+      entry = { value: null, timer: 0 };
+      pendingGmWrites.set(key, entry);
+    }
+    entry.value = value;
+    if (entry.timer) return;
+    entry.timer = setTimeout(() => {
+      pendingGmWrites.delete(key);
+      gmWriteJson(key, entry.value);
+    }, STORE_FLUSH_MS);
+  }
+  function flushGmWrites() {
+    if (!pendingGmWrites.size) return;
+    for (const [key, entry] of pendingGmWrites) {
+      clearTimeout(entry.timer);
+      gmWriteJson(key, entry.value);
+    }
+    pendingGmWrites.clear();
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushGmWrites();
+  });
+  window.addEventListener("pagehide", flushGmWrites);
+
   // Evict oldest-written entries (by their `.t` timestamp) until `map` holds at
   // most `max`. Shared by every GM blob that caps its size — the per-source
   // persistentStore and the history archive both keep the same {t,d} shape.
@@ -328,7 +361,9 @@
   // TTL'd per-item cache persisted as one JSON blob per source under a
   // `bcs-cache-<name>` GM value. Expired entries are pruned once on first
   // load; `max` caps the blob by evicting oldest-written entries so a long
-  // browsing session can't grow it unbounded.
+  // browsing session can't grow it unbounded. Writes are deferred (see
+  // gmWriteJsonDeferred) so a multi-lookup modal open doesn't re-serialize
+  // the whole blob three times in one turn.
   function persistentStore(name, ttl, max) {
     if (!canStore) return { get: () => undefined, set: () => {} };
     const key = `bcs-cache-${name}`;
@@ -352,7 +387,7 @@
         const map = load();
         map[id] = { t: Date.now(), d };
         evictOldest(map, max);
-        gmWriteJson(key, map);
+        gmWriteJsonDeferred(key, map);
       },
     };
   }
@@ -533,11 +568,20 @@
       map[id] = { t: Date.now(), d: merged };
       evictOldest(map, ARCHIVE_MAX);
       this._sorted = null; // order changed — list() rebuilds lazily
-      gmWriteJson(ARCHIVE_KEY, map);
+      // Deferred: opening several modals in a row rewrites the same blob;
+      // coalesce so a 4000-entry archive isn't re-stringified per click.
+      gmWriteJsonDeferred(ARCHIVE_KEY, map);
     },
     clear() {
       this._cache = {};
       this._sorted = null;
+      // Drop any pending deferred write for this key so a stale flush can't
+      // resurrect the archive after a clear-all.
+      const pending = pendingGmWrites.get(ARCHIVE_KEY);
+      if (pending) {
+        clearTimeout(pending.timer);
+        pendingGmWrites.delete(ARCHIVE_KEY);
+      }
       if (canStore) gmWriteJson(ARCHIVE_KEY, {});
     },
   };
