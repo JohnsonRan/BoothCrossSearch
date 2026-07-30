@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.7
+// @version      2.14.8
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -1933,8 +1933,16 @@
       });
       scheduleBadges();
     }
+    // Drop wraps the SPA has removed so a long scroll session doesn't keep
+    // a growing set of detached nodes alive via knownCardWraps.
+    function pruneKnownCardWraps() {
+      for (const wrap of [...knownCardWraps]) {
+        if (!wrap.isConnected) knownCardWraps.delete(wrap);
+      }
+    }
     function queueAllBadges() {
       if (knownCardWraps.size) {
+        pruneKnownCardWraps();
         queueBadgeWraps(knownCardWraps);
       } else {
         queueBadgeRoots([document.body]);
