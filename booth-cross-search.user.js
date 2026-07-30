@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.12
+// @version      2.14.13
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -1322,20 +1322,35 @@
       }
       .bcs-hist-sub-row { display: flex; align-items: center; justify-content: space-between; }
       /* Wish-toggle star shared by history thumbs and product cards:
-         hover-revealed when off, constant gold when on. */
+         hover-revealed when off, constant gold when on. Touch devices have
+         no hover — keep a soft always-on affordance there. */
       .bcs-tile-star {
         position: absolute; top: 6px; right: 6px; width: 22px; height: 22px;
         display: flex; align-items: center; justify-content: center;
         border: none; padding: 0; z-index: 5;
         border-radius: 50%; background: var(--panel, #fff); color: var(--muted, #999);
         box-shadow: 0 1px 4px rgba(0,0,0,.2); cursor: pointer;
-        opacity: 0; transition: opacity .12s, color .15s;
+        opacity: 0; transition: opacity .12s, color .15s, transform .12s;
       }
       .bcs-tile-star[hidden] { display: none; }
       .bcs-hist-item:hover .bcs-tile-star,
       .cardImgWrap:hover .bcs-tile-star { opacity: 1; }
       .bcs-tile-star.on { opacity: 1; color: #f5a623; }
+      @media (hover: none) {
+        .bcs-tile-star { opacity: .88; }
+      }
       .bcs-tile-star svg { width: 14px; height: 14px; }
+      /* Visible fail flash — title alone is easy to miss on tiles. */
+      .bcs-tile-star.bcs-wish-fail,
+      .bcs-star.bcs-wish-fail {
+        color: #e2394f !important; opacity: 1;
+        animation: bcs-wish-shake .35s ease;
+      }
+      @keyframes bcs-wish-shake {
+        0%, 100% { transform: translateX(0); }
+        25% { transform: translateX(-3px); }
+        75% { transform: translateX(3px); }
+      }
       @media (max-width: 640px) {
         .bcs-modal-top { flex-direction: column; }
         .bcs-media { flex: none; width: 100%; }
@@ -1363,6 +1378,16 @@
     const STAR_SVG =
       '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
     const WISH_FAIL_MSG = "收藏失败（需登录 Booth？）";
+    // title= alone is easy to miss on a 22px tile; flash red + shake briefly.
+    function flashWishFail(el) {
+      if (!el) return;
+      el.title = WISH_FAIL_MSG;
+      el.classList.add("bcs-wish-fail");
+      clearTimeout(el._bcsWishFailTimer);
+      el._bcsWishFailTimer = setTimeout(() => {
+        el.classList.remove("bcs-wish-fail");
+      }, 1600);
+    }
 
     // Resolve a product card's Booth item id from its .cardImgWrap. Both the
     // click interceptor and the badge pass depend on this (brittle) SPA
@@ -1704,7 +1729,7 @@
           .then(() => queueAllBadges())
           .catch(() => {
             paintStar(!on);
-            starBtn.title = WISH_FAIL_MSG;
+            flashWishFail(starBtn);
           })
           .finally(() => {
             starBtn.disabled = false;
@@ -1945,7 +1970,7 @@
           () => onDone && onDone(),
           () => {
             star.classList.toggle("on", !on);
-            star.title = WISH_FAIL_MSG;
+            flashWishFail(star);
           },
         );
       });
