@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.13
+// @version      2.14.14
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -55,10 +55,13 @@
     }
     .bcs-warn { font-size: 11px; color: #b8860b; font-weight: 600; text-decoration: none; }
     .bcs-warn:hover { text-decoration: underline; }
+    /* Fixed + JS-placed so modal overflow / viewport edges don't clip it.
+       z-index sits above the vrcatalogue overlay (99999). */
     .bcs-panel {
-      position: absolute; top: 100%; left: 0; margin-top: 4px; z-index: 999;
+      position: fixed; z-index: 100001;
       background: var(--panel, #fff); border: 1px solid var(--border, #ddd); border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.15);
-      min-width: 280px; max-width: 420px; max-height: 320px; overflow-y: auto;
+      min-width: 280px; max-width: min(420px, calc(100vw - 16px)); max-height: 320px; overflow-y: auto;
+      box-sizing: border-box;
     }
     .bcs-panel-item { display: block; padding: 8px 10px; border-bottom: 1px solid var(--border, #eee); text-decoration: none; color: var(--text, #222); }
     .bcs-panel-item:last-child { border-bottom: none; }
@@ -668,14 +671,29 @@
     return { auth: false, message: RETRY_MSG };
   }
 
-  function closePanels(bar) {
-    bar.querySelectorAll(".bcs-panel").forEach((p) => p.remove());
+  // At most one search result panel (Booth page or modal). Tracked so Escape
+  // can close it before the overlay stack, and so a second open replaces the
+  // first cleanly even when the panel is body-fixed (not a child of `bar`).
+  let activeSearchPanel = null;
+  function closePanels() {
+    if (activeSearchPanel) activeSearchPanel.close();
   }
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Escape" || !activeSearchPanel) return;
+      e.preventDefault();
+      e.stopPropagation();
+      activeSearchPanel.close();
+    },
+    true,
+  );
 
   function showPanel(bar, entries, emptyMessage) {
-    closePanels(bar);
+    closePanels();
     const panel = document.createElement("div");
     panel.className = "bcs-panel";
+    panel.setAttribute("role", "listbox");
     if (!entries.length) {
       const empty = document.createElement("div");
       empty.className = "bcs-panel-empty";
@@ -684,6 +702,7 @@
     } else {
       for (const e of entries) {
         const a = makeLink("", e.url, "bcs-panel-item");
+        a.setAttribute("role", "option");
         const title = document.createElement("span");
         title.className = "t";
         title.textContent = e.title;
@@ -694,14 +713,49 @@
         panel.appendChild(a);
       }
     }
-    bar.appendChild(panel);
-    const closer = (ev) => {
-      if (!panel.contains(ev.target)) {
-        panel.remove();
-        document.removeEventListener("click", closer);
+    // Body-fixed: bar may sit inside a scrolling modal that would clip
+    // position:absolute descendants.
+    document.body.appendChild(panel);
+    const place = () => {
+      if (!panel.isConnected) return;
+      const r = bar.getBoundingClientRect();
+      const maxH = Math.min(320, Math.max(140, window.innerHeight * 0.4));
+      panel.style.maxHeight = `${maxH}px`;
+      const width = Math.min(
+        Math.max(280, r.width),
+        Math.min(420, window.innerWidth - 16),
+      );
+      panel.style.width = `${width}px`;
+      const ph = panel.offsetHeight;
+      let left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
+      let top = r.bottom + 4;
+      if (top + ph > window.innerHeight - 8) {
+        const above = r.top - ph - 4;
+        top = above >= 8 ? above : Math.max(8, window.innerHeight - ph - 8);
+      }
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+    };
+    place();
+    const onReposition = () => place();
+    window.addEventListener("resize", onReposition);
+    // Capture scroll from modal/body so the panel tracks the bar.
+    window.addEventListener("scroll", onReposition, true);
+    const close = () => {
+      panel.remove();
+      document.removeEventListener("click", onDocClick);
+      window.removeEventListener("resize", onReposition);
+      window.removeEventListener("scroll", onReposition, true);
+      if (activeSearchPanel && activeSearchPanel.panel === panel) {
+        activeSearchPanel = null;
       }
     };
-    setTimeout(() => document.addEventListener("click", closer), 0);
+    const onDocClick = (ev) => {
+      if (!panel.contains(ev.target)) close();
+    };
+    activeSearchPanel = { panel, close };
+    // Defer so the opening click doesn't immediately dismiss the panel.
+    setTimeout(() => document.addEventListener("click", onDocClick), 0);
   }
 
   // The VRCPirate/RipperStore button bar, shared by the Booth item page and the
@@ -718,10 +772,18 @@
     // count badge next to the label — shown only for 2+ results (at 0 the
     // red dot already says "none", and a lone "1" repeats the green dot;
     // VRCPirate in practice never exceeds one match, so its badge stays off).
-    function setResult(dot, cnt, n) {
+    // Keep a descriptive title after load — empty title left the status
+    // dots opaque to anyone who wasn't already trained on the colors.
+    function resultTitle(n) {
+      if (!n) return "未找到匹配结果";
+      if (n === 1) return "找到 1 条 · 点击打开";
+      return `找到 ${n} 条 · 点击查看`;
+    }
+    function setResult(btn, dot, cnt, n) {
       dot.className = `dot ${n ? "ok" : "none"}`;
       cnt.hidden = n < 2;
       cnt.textContent = n;
+      btn.title = resultTitle(n);
     }
 
     function makeSearchButton(className, label, title) {
@@ -740,11 +802,11 @@
     const vrcp = makeSearchButton("vrcp", "VRCPirate", "加载中…");
     const vrcpBtn = vrcp.button;
     vrcpBtn.addEventListener("click", async () => {
-      closePanels(bar);
+      closePanels();
       vrcpBtn.disabled = true;
       try {
         const matches = await getVrcpMatches(itemId);
-        setResult(vrcp.dot, vrcp.count, matches.length);
+        setResult(vrcpBtn, vrcp.dot, vrcp.count, matches.length);
         if (matches.length === 1) {
           window.open(
             `https://vrcpirate.com/iviewer/${matches[0].id}`,
@@ -756,13 +818,14 @@
             bar,
             matches.map((a) => ({
               title: a.name,
-              sub: `${a.downloads} downloads`,
+              sub: `${a.downloads} 次下载`,
               url: `https://vrcpirate.com/iviewer/${a.id}`,
             })),
           );
         }
       } catch (e) {
         vrcp.dot.className = "dot error";
+        vrcpBtn.title = RETRY_MSG;
         showPanel(bar, [], RETRY_MSG);
       } finally {
         vrcpBtn.disabled = false;
@@ -772,11 +835,11 @@
     const ripper = makeSearchButton("ripper", "RipperStore", "检测登录状态中…");
     const ripperBtn = ripper.button;
     ripperBtn.addEventListener("click", async () => {
-      closePanels(bar);
+      closePanels();
       ripperBtn.disabled = true;
       try {
         const posts = await getRipperResult(itemId);
-        setResult(ripper.dot, ripper.count, posts.length);
+        setResult(ripperBtn, ripper.dot, ripper.count, posts.length);
         showPanel(
           bar,
           posts.map((p) => ({
@@ -793,6 +856,7 @@
       } catch (e) {
         const { auth, message } = classifyRipperError(e);
         ripper.dot.className = `dot ${auth ? "none" : "error"}`;
+        ripperBtn.title = message;
         showPanel(bar, [], message);
       } finally {
         ripperBtn.disabled = false;
@@ -810,10 +874,10 @@
     bar.autoCheck = () => {
       // VRCPirate: no login gate, search straight away.
       vrcpBtn.disabled = false;
-      vrcpBtn.title = "";
+      vrcpBtn.title = "查询中…";
       getVrcpMatches(itemId)
         .then((matches) => {
-          setResult(vrcp.dot, vrcp.count, matches.length);
+          setResult(vrcpBtn, vrcp.dot, vrcp.count, matches.length);
         })
         .catch(() => {
           vrcp.dot.className = "dot error";
@@ -823,8 +887,7 @@
       getRipperResult(itemId)
         .then((posts) => {
           ripperBtn.disabled = false;
-          ripperBtn.title = "";
-          setResult(ripper.dot, ripper.count, posts.length);
+          setResult(ripperBtn, ripper.dot, ripper.count, posts.length);
         })
         .catch((e) => {
           const { auth, message } = classifyRipperError(e);
