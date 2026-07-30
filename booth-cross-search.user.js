@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.11
+// @version      2.14.12
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -1113,6 +1113,22 @@
         padding: 20px; position: relative; box-sizing: border-box;
         scrollbar-width: thin; scrollbar-color: transparent transparent;
       }
+      /* Sticky so it stays reachable while the modal body scrolls; explicit
+         close for touch / non-Esc users (backdrop + Escape still work). */
+      .bcs-modal-close {
+        position: sticky; top: 0; float: right; z-index: 8;
+        width: 32px; height: 32px; margin: -4px -4px 8px 12px; padding: 0;
+        display: flex; align-items: center; justify-content: center;
+        border: 1px solid var(--border, #e4e4e7); border-radius: 50%;
+        background: var(--panel, #fff); color: var(--muted, #666);
+        font-size: 20px; font-weight: 500; line-height: 1; cursor: pointer;
+        box-shadow: 0 1px 4px rgba(0,0,0,.08);
+        transition: background .12s, color .12s, border-color .12s;
+      }
+      .bcs-modal-close:hover {
+        background: var(--item-hover, #f5f5f5); color: var(--text, #222);
+        border-color: var(--border, #d4d4d8);
+      }
       /* Gutter (scrollbar-width: thin / webkit width: 8px) stays reserved at
          all times so hovering never resizes the modal — only the thumb color
          toggles, keeping an idle view clean while scroll stays discoverable. */
@@ -1555,6 +1571,22 @@
         if (closeOnAnyClick || e.target === el) entry.close();
       });
       document.body.appendChild(el);
+      return entry;
+    }
+
+    // Explicit × on product / history modals (zoom keeps backdrop-only close).
+    function attachModalClose(modal, close) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "bcs-modal-close";
+      btn.setAttribute("aria-label", "关闭");
+      btn.textContent = "×";
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        close();
+      });
+      modal.prepend(btn);
+      return btn;
     }
 
     // Prev/next arrow buttons, shared by the modal (.bcs-nav, inside the image)
@@ -1603,7 +1635,7 @@
       });
       queueAllBadges();
       overlay.innerHTML = `
-        <div class="bcs-modal" role="dialog" aria-modal="true">
+        <div class="bcs-modal" role="dialog" aria-modal="true" aria-label="商品详情">
           <div class="bcs-modal-top">
             <div class="bcs-media">
               <div class="bcs-img-stage">
@@ -1747,13 +1779,16 @@
       metaEl.insertAdjacentElement("afterend", bar);
       bar.autoCheck();
 
-      openOverlay(overlay, {
+      const overlayEntry = openOverlay(overlay, {
         onArrow: stepImage,
         onClose: () => {
           alive = false;
           onClose?.();
         },
       });
+      attachModalClose(overlay.querySelector(".bcs-modal"), () =>
+        overlayEntry.close(),
+      );
 
       // Register the view with Booth even when the item JSON is served from
       // cache (see pingBoothViewIfCached), so it lands in Booth's 已看 list and
@@ -2078,6 +2113,9 @@
       overlay.className = "bcs-overlay";
       const modal = document.createElement("div");
       modal.className = "bcs-modal";
+      modal.setAttribute("role", "dialog");
+      modal.setAttribute("aria-modal", "true");
+      modal.setAttribute("aria-label", "最近看过");
       modal.innerHTML = '<div class="bcs-hist-head"><span>最近看过</span></div>';
       overlay.appendChild(modal);
       // Sections (收藏 / 最近 / 更早 grids + headers) live in this body so a
@@ -2226,13 +2264,14 @@
         if (!filterWrap.contains(e.target)) drop.hidden = true;
       });
 
-      openOverlay(overlay, {
+      const histOverlay = openOverlay(overlay, {
         onClose: () => {
           clearTimeout(saveTimer);
           clearTimeout(filterTimer);
           clearTimeout(armTimer);
         },
       });
+      attachModalClose(modal, () => histOverlay.close());
 
       let wished = null; // Set<string> once resolved; null = unknown/hidden
       let wishInfo = null; // Map<id, {id,title,img,price,shop}> from the endpoint
