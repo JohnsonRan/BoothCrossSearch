@@ -56,8 +56,11 @@ request; a rejected promise is evicted from the cache so the next attempt can re
 results additionally persist across page loads via `persistentStore()` (one TTL'd JSON blob per
 source in `GM_getValue`/`GM_setValue`: search results 6h, Booth item JSON 24h, oldest-evicted size
 cap). Only fulfilled values are persisted — errors, including RipperStore's not-authorised, never
-outlive the page. Everything storage-backed degrades gracefully when the GM value grants are
-missing (`canStore`).
+outlive the page. `get()` re-checks TTL on every read (not only on first blob load) so a long-lived
+tab cannot serve expired hits from the in-memory map. Disk writes go through
+`gmWriteJsonDeferred` (coalesced ~400ms per key, flushed on `visibilitychange`/`pagehide`) so a
+modal open that touches archive + multiple caches does not re-stringify every blob synchronously.
+Everything storage-backed degrades gracefully when the GM value grants are missing (`canStore`).
 
 ### Booth item page (`initBooth`)
 
@@ -121,8 +124,11 @@ A star on the vrcatalogue modal, history tiles, and product cards syncs with the
 real Booth wish list ("スキ!"): state is a paginated fetch of
 `accounts.booth.pm/wish_list_name_items.json` (20 items/page, walked to a cap; 401
 when logged out is resolved as an empty list so stars just render unfilled),
-memoized into a stable in-place-mutated container and re-walked each time the
-history panel opens — so likes made on booth.pm appear without a page reload. Note
+memoized into a stable in-place-mutated container. The history panel requests a
+fresh walk, but `getWishList(true)` only re-fetches after a 3-minute TTL so
+opening the panel twice in a row does not re-walk every page; in-session
+`setWished` still mutates the shared set immediately. Likes made on booth.pm
+therefore show up within a few minutes without a page reload. Note
 the similarly-named `wish_lists.json` is a decoy — it returns `{"item_ids":[]}` even
 when logged in. The response carries full item cards (name/price/shop/thumbnail),
 which the panel's 收藏 strip renders lazily with no per-item fetches. Writes go to
