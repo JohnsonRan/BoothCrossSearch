@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.8
+// @version      2.14.9
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -1583,6 +1583,11 @@
     function openModal(seed, { onClose } = {}) {
       const overlay = document.createElement("div");
       overlay.className = "bcs-overlay";
+      // Flipped false in onClose so late getBoothItem / wish resolves from a
+      // quickly-dismissed modal don't rewrite markSeen or touch detached DOM
+      // after the user has already moved on (isConnected covers most cases;
+      // alive also covers stacked overlays that stay connected underneath).
+      let alive = true;
       const boothUrl = `https://booth.pm/items/${seed.id}`;
       // Canonical full-size seed image, computed once and reused — the modal
       // seed, the star entry, and markSeen all want the same bare URL.
@@ -1648,6 +1653,7 @@
       };
       getWishedIds()
         .then((set) => {
+          if (!alive) return;
           starBtn.hidden = false;
           paintStar(set.has(String(seed.id)));
         })
@@ -1738,7 +1744,13 @@
       metaEl.insertAdjacentElement("afterend", bar);
       bar.autoCheck();
 
-      openOverlay(overlay, { onArrow: stepImage, onClose });
+      openOverlay(overlay, {
+        onArrow: stepImage,
+        onClose: () => {
+          alive = false;
+          onClose?.();
+        },
+      });
 
       // Register the view with Booth even when the item JSON is served from
       // cache (see pingBoothViewIfCached), so it lands in Booth's 已看 list and
@@ -1746,7 +1758,7 @@
       pingBoothViewIfCached(seed.id);
       getBoothItem(seed.id)
         .then((item) => {
-          if (!overlay.isConnected) return;
+          if (!alive || !overlay.isConnected) return;
           titleEl.textContent = item.name;
           titleEl.href = item.url || boothUrl;
           overlay.querySelector(".bcs-buy").href = item.url || boothUrl;
@@ -1835,7 +1847,7 @@
           }
         })
         .catch(() => {
-          if (!overlay.isConnected) return;
+          if (!alive || !overlay.isConnected) return;
           descEl.textContent =
             "商品说明加载失败（R18 商品需登录 Booth 后在官网查看）";
         });
