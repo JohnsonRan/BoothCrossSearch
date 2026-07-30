@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.9
+// @version      2.14.10
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -129,10 +129,16 @@
   }
 
   function fetchJson(url) {
-    return gmGet(url).then((res) => ({
-      status: res.status,
-      json: JSON.parse(res.responseText),
-    }));
+    return gmGet(url).then((res) => {
+      try {
+        return {
+          status: res.status,
+          json: JSON.parse(res.responseText || "null"),
+        };
+      } catch {
+        throw new Error(`invalid json ${res.status}`);
+      }
+    });
   }
 
   // Singleton in-flight promise for a whole-endpoint fetch, memoized until it
@@ -465,7 +471,7 @@
       itemId,
       () =>
         fetchJson(
-          `https://api-v2.vrcpirate.com/assets?page=1&search=${itemId}`,
+          `https://api-v2.vrcpirate.com/assets?page=1&search=${encodeURIComponent(itemId)}`,
         ).then(({ json }) =>
           (json.data || []).filter((a) => String(a.boothID) === itemId),
         ),
