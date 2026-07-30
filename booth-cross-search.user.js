@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.10
+// @version      2.14.11
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -193,17 +193,17 @@
   }
 
   const WISH_PAGE_CAP = 25;
-  // History panel used to re-walk every page on each open; for large wish
-  // lists that is tens of sequential requests. Within this window a
-  // fresh=true call reuses the last successful walk (setWished still mutates
-  // the in-memory set immediately, so stars toggled here stay correct).
+  // Soft-path (badge / modal) reuse window: without a force flag, a successful
+  // walk is shared until this elapses, so long-lived tabs still catch up on
+  // booth.pm likes without the history panel, while rapid modal opens do not
+  // re-walk every page. Force-refresh (history panel) ignores the TTL.
+  // setWished still mutates the in-memory set immediately either way.
   const WISH_TTL_MS = 3 * 60e3;
   // Stable container, mutated in place by every (re)fetch and by setWished:
   // everything holding a reference (badge pass, open modal, panel closures)
-  // sees fresh data without re-subscribing. Pass fresh=true to re-walk the
-  // endpoint when the TTL has expired (the history panel does, so likes made
-  // on booth.pm show up within a few minutes without a page reload); a failed
-  // refresh keeps the previous contents.
+  // sees fresh data without re-subscribing. Pass fresh=true to always re-walk
+  // the endpoint (the history panel does, so likes made on booth.pm show up
+  // as soon as the panel opens); a failed refresh keeps the previous contents.
   const wishData = {
     ids: new Set(),
     byId: new Map(),
@@ -241,16 +241,13 @@
       });
     return fetchPage(1);
   });
-  // fresh=true only forces a re-walk after a successful load whose TTL has
-  // elapsed. First load (or an in-flight first load) shares the memoized
-  // promise — never cancels it mid-walk. Within the TTL window opening the
-  // history panel twice in a row is free.
+  // fresh=true (history panel): always re-walk so booth.pm likes appear as
+  // soon as the panel opens. Soft path (badge/modal via getWishedIds): reuse
+  // the memoized walk until WISH_TTL_MS elapses, then re-walk once so a long
+  // session still converges without opening the panel.
   function getWishList(fresh) {
-    if (
-      fresh &&
-      wishFetchedAt &&
-      Date.now() - wishFetchedAt > WISH_TTL_MS
-    ) {
+    if (fresh) return fetchWishList(true);
+    if (wishFetchedAt && Date.now() - wishFetchedAt > WISH_TTL_MS) {
       return fetchWishList(true);
     }
     return fetchWishList(false);

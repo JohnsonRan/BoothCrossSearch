@@ -124,11 +124,11 @@ A star on the vrcatalogue modal, history tiles, and product cards syncs with the
 real Booth wish list ("スキ!"): state is a paginated fetch of
 `accounts.booth.pm/wish_list_name_items.json` (20 items/page, walked to a cap; 401
 when logged out is resolved as an empty list so stars just render unfilled),
-memoized into a stable in-place-mutated container. The history panel requests a
-fresh walk, but `getWishList(true)` only re-fetches after a 3-minute TTL so
-opening the panel twice in a row does not re-walk every page; in-session
-`setWished` still mutates the shared set immediately. Likes made on booth.pm
-therefore show up within a few minutes without a page reload. Note
+memoized into a stable in-place-mutated container. The history panel always
+force-refreshes (`getWishList(true)`) so likes made on booth.pm show up as
+soon as it opens; badge/modal soft fetches reuse the last walk for 3 minutes
+(`WISH_TTL_MS`) so rapid modal opens do not re-walk every page. In-session
+`setWished` still mutates the shared set immediately either way. Note
 the similarly-named `wish_lists.json` is a decoy — it returns `{"item_ids":[]}` even
 when logged in. The response carries full item cards (name/price/shop/thumbnail),
 which the panel's 收藏 strip renders lazily with no per-item fetches. Writes go to
