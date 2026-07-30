@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.17
+// @version      2.14.20
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -1176,26 +1176,30 @@
         padding: 20px; position: relative; box-sizing: border-box;
         scrollbar-width: thin; scrollbar-color: transparent transparent;
       }
-      /* Product modal: star + close share one sticky/float cluster so they
-         align as a pair instead of fighting (title-row star vs floated ×).
-         History still uses a lone .bcs-modal-close with the same chrome. */
+      /* Product modal: star + close share an absolute cluster at top-right so
+         they align as a pair without float-clearance or modal layout distortion.
+         History mounts close inside .bcs-hist-head (static) so it flex-aligns
+         with the title/filter row instead of guessing a top offset. */
       .bcs-modal-actions {
-        position: sticky; top: 0; float: right; z-index: 8;
+        position: absolute; top: 16px; right: 16px; z-index: 8;
         display: flex; align-items: center; gap: 6px;
-        margin: -4px -4px 8px 12px;
       }
       .bcs-modal-close {
-        position: sticky; top: 0; float: right; z-index: 8;
-        width: 32px; height: 32px; margin: -4px -4px 8px 12px; padding: 0;
+        position: absolute; top: 16px; right: 16px; z-index: 8;
+        box-sizing: border-box; flex: none;
+        width: 32px; height: 32px; min-width: 32px; min-height: 32px;
+        max-width: 32px; max-height: 32px; margin: 0; padding: 0;
         display: flex; align-items: center; justify-content: center;
         border: 1px solid var(--border, #e4e4e7); border-radius: 50%;
         background: var(--panel, #fff); color: var(--muted, #666);
-        font-size: 20px; font-weight: 500; line-height: 1; cursor: pointer;
-        box-shadow: 0 1px 4px rgba(0,0,0,.08);
+        font-size: 20px; font-weight: 500; line-height: 0; cursor: pointer;
+        box-shadow: 0 1px 4px rgba(0,0,0,.08); overflow: hidden;
+        appearance: none; -webkit-appearance: none;
         transition: background .12s, color .12s, border-color .12s;
       }
-      .bcs-modal-actions .bcs-modal-close {
-        position: static; float: none; margin: 0;
+      .bcs-modal-actions .bcs-modal-close,
+      .bcs-hist-head .bcs-modal-close {
+        position: static; margin: 0;
       }
       .bcs-modal-close:hover {
         background: var(--item-hover, #f5f5f5); color: var(--text, #222);
@@ -1281,15 +1285,18 @@
       .bcs-var-name { color: var(--text, #222); word-break: break-word; }
       .bcs-var-price { color: var(--accent, #fc4d50); font-weight: 700; flex: none; }
       .bcs-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
-      .bcs-title-row { display: flex; align-items: flex-start; gap: 8px; }
+      .bcs-title-row { display: flex; align-items: flex-start; gap: 8px; padding-right: 76px; }
       .bcs-title-row .bcs-title { flex: 1; min-width: 0; }
       /* Match .bcs-modal-close chrome so ★ and × read as one control group. */
       .bcs-star {
-        flex: none; width: 32px; height: 32px; padding: 0; cursor: pointer;
+        box-sizing: border-box; flex: none;
+        width: 32px; height: 32px; min-width: 32px; min-height: 32px;
+        max-width: 32px; max-height: 32px; margin: 0; padding: 0; cursor: pointer;
         display: flex; align-items: center; justify-content: center;
         border: 1px solid var(--border, #e4e4e7); border-radius: 50%;
         background: var(--panel, #fff); color: var(--muted, #666);
-        box-shadow: 0 1px 4px rgba(0,0,0,.08);
+        box-shadow: 0 1px 4px rgba(0,0,0,.08); overflow: hidden;
+        appearance: none; -webkit-appearance: none;
         transition: background .12s, color .12s, border-color .12s, transform .12s;
       }
       .bcs-star:hover {
@@ -1336,13 +1343,14 @@
       .bcs-hist-fab:hover { background: var(--item-hover, #f5f5f5); transform: scale(1.06); }
       .bcs-hist-fab svg { width: 20px; height: 20px; }
       .bcs-hist-head {
-        display: flex; justify-content: space-between; align-items: center;
-        margin-bottom: 14px; font-size: 15px; font-weight: 700; color: var(--text, #222);
+        display: flex; align-items: center; gap: 12px;
+        min-height: 32px; margin-bottom: 14px; font-size: 15px; font-weight: 700; color: var(--text, #222);
       }
-      .bcs-filter-wrap { position: relative; flex: 1; min-width: 0; margin-left: 12px; }
+      .bcs-hist-head > span { flex: none; }
+      .bcs-filter-wrap { position: relative; flex: 1; min-width: 0; }
       .bcs-hist-filter {
-        width: 100%; box-sizing: border-box; padding: 4px 10px;
-        font-size: 12px; font-family: inherit; color: var(--text, #222);
+        width: 100%; box-sizing: border-box; height: 32px; padding: 0 10px;
+        font-size: 12px; font-family: inherit; line-height: 1; color: var(--text, #222);
         background: var(--item-hover, #f5f5f5); border: 1px solid var(--border, #ddd);
         border-radius: 6px; outline: none;
       }
@@ -1434,6 +1442,7 @@
       @media (max-width: 640px) {
         .bcs-modal-top { flex-direction: column; }
         .bcs-media { flex: none; width: 100%; }
+        .bcs-title-row { padding-right: 0; }
       }
       .cardImgWrap { position: relative; }
       /* Seen = light grey veil over the image; sits under the chip and star.
@@ -1686,7 +1695,7 @@
 
     // Explicit × on product / history modals (zoom keeps backdrop-only close).
     // Product modals host a .bcs-modal-actions cluster (star + close); history
-    // has no cluster, so the button still floats sticky on the modal itself.
+    // mounts into .bcs-hist-head so flex alignment matches title/filter.
     function attachModalClose(modal, close) {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -1698,7 +1707,9 @@
         close();
       });
       const actions = modal.querySelector(".bcs-modal-actions");
+      const histHead = modal.querySelector(".bcs-hist-head");
       if (actions) actions.appendChild(btn);
+      else if (histHead) histHead.appendChild(btn);
       else modal.prepend(btn);
       return btn;
     }
