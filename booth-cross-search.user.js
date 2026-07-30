@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.6
+// @version      2.14.7
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -402,8 +402,17 @@
     };
     return {
       get(id) {
-        const entry = load()[id];
-        return entry ? entry.d : undefined;
+        // Re-check TTL on every read: load() only prunes once per page life,
+        // so a tab left open past the TTL would otherwise keep serving stale
+        // hits from the in-memory map.
+        const map = load();
+        const entry = map[id];
+        if (!entry) return undefined;
+        if (Date.now() - entry.t > ttl) {
+          delete map[id];
+          return undefined;
+        }
+        return entry.d;
       },
       set(id, d) {
         const map = load();
