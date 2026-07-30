@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.15
+// @version      2.14.17
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -1176,8 +1176,14 @@
         padding: 20px; position: relative; box-sizing: border-box;
         scrollbar-width: thin; scrollbar-color: transparent transparent;
       }
-      /* Sticky so it stays reachable while the modal body scrolls; explicit
-         close for touch / non-Esc users (backdrop + Escape still work). */
+      /* Product modal: star + close share one sticky/float cluster so they
+         align as a pair instead of fighting (title-row star vs floated ×).
+         History still uses a lone .bcs-modal-close with the same chrome. */
+      .bcs-modal-actions {
+        position: sticky; top: 0; float: right; z-index: 8;
+        display: flex; align-items: center; gap: 6px;
+        margin: -4px -4px 8px 12px;
+      }
       .bcs-modal-close {
         position: sticky; top: 0; float: right; z-index: 8;
         width: 32px; height: 32px; margin: -4px -4px 8px 12px; padding: 0;
@@ -1187,6 +1193,9 @@
         font-size: 20px; font-weight: 500; line-height: 1; cursor: pointer;
         box-shadow: 0 1px 4px rgba(0,0,0,.08);
         transition: background .12s, color .12s, border-color .12s;
+      }
+      .bcs-modal-actions .bcs-modal-close {
+        position: static; float: none; margin: 0;
       }
       .bcs-modal-close:hover {
         background: var(--item-hover, #f5f5f5); color: var(--text, #222);
@@ -1274,14 +1283,22 @@
       .bcs-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
       .bcs-title-row { display: flex; align-items: flex-start; gap: 8px; }
       .bcs-title-row .bcs-title { flex: 1; min-width: 0; }
+      /* Match .bcs-modal-close chrome so ★ and × read as one control group. */
       .bcs-star {
-        flex: none; border: none; background: none; padding: 2px; cursor: pointer;
-        color: var(--muted, #999); transition: color .15s, transform .12s;
+        flex: none; width: 32px; height: 32px; padding: 0; cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+        border: 1px solid var(--border, #e4e4e7); border-radius: 50%;
+        background: var(--panel, #fff); color: var(--muted, #666);
+        box-shadow: 0 1px 4px rgba(0,0,0,.08);
+        transition: background .12s, color .12s, border-color .12s, transform .12s;
       }
-      .bcs-star:hover { transform: scale(1.15); }
-      .bcs-star.on { color: #f5a623; }
+      .bcs-star:hover {
+        background: var(--item-hover, #f5f5f5); color: var(--text, #222);
+        border-color: var(--border, #d4d4d8); transform: scale(1.06);
+      }
+      .bcs-star.on { color: #f5a623; border-color: #f5a623; }
       .bcs-star:disabled { opacity: .5; cursor: wait; }
-      .bcs-star svg { width: 20px; height: 20px; display: block; }
+      .bcs-star svg { width: 16px; height: 16px; display: block; }
       .bcs-title {
         font-size: 17px; font-weight: 700; line-height: 1.45; color: var(--text, #222);
         text-decoration: none; word-break: break-word;
@@ -1668,6 +1685,8 @@
     }
 
     // Explicit × on product / history modals (zoom keeps backdrop-only close).
+    // Product modals host a .bcs-modal-actions cluster (star + close); history
+    // has no cluster, so the button still floats sticky on the modal itself.
     function attachModalClose(modal, close) {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -1678,7 +1697,9 @@
         e.stopPropagation();
         close();
       });
-      modal.prepend(btn);
+      const actions = modal.querySelector(".bcs-modal-actions");
+      if (actions) actions.appendChild(btn);
+      else modal.prepend(btn);
       return btn;
     }
 
@@ -1708,7 +1729,21 @@
       };
     }
 
+    // At most one product modal. A second open (double-click, another card,
+    // or a history tile) replaces the first instead of stacking; zoom still
+    // stacks on top, and the history panel stays underneath when present.
+    let activeProductEntry = null;
+    function closeActiveProductModal() {
+      if (!activeProductEntry) return;
+      // Close topmost first so a zoom layered on the product doesn't orphan.
+      while (overlayStack.includes(activeProductEntry)) {
+        overlayStack[overlayStack.length - 1].close();
+      }
+      activeProductEntry = null;
+    }
+
     function openModal(seed, { onClose } = {}) {
+      closeActiveProductModal();
       const overlay = document.createElement("div");
       overlay.className = "bcs-overlay";
       // Flipped false in onClose so late getBoothItem / wish resolves from a
@@ -1729,6 +1764,9 @@
       queueAllBadges();
       overlay.innerHTML = `
         <div class="bcs-modal" role="dialog" aria-modal="true" aria-label="商品详情">
+          <div class="bcs-modal-actions">
+            <button class="bcs-star" type="button" hidden aria-label="收藏">${STAR_SVG}</button>
+          </div>
           <div class="bcs-modal-top">
             <div class="bcs-media">
               <div class="bcs-img-stage">
@@ -1740,7 +1778,6 @@
             <div class="bcs-info">
               <div class="bcs-title-row">
                 <a class="bcs-title" target="_blank" rel="noopener noreferrer"></a>
-                <button class="bcs-star" type="button" hidden aria-label="收藏">${STAR_SVG}</button>
               </div>
               <div class="bcs-meta"></div>
               <div class="bcs-variations"></div>
@@ -1876,9 +1913,11 @@
         onArrow: stepImage,
         onClose: () => {
           alive = false;
+          if (activeProductEntry === overlayEntry) activeProductEntry = null;
           onClose?.();
         },
       });
+      activeProductEntry = overlayEntry;
       attachModalClose(overlay.querySelector(".bcs-modal"), () =>
         overlayEntry.close(),
       );
@@ -1977,10 +2016,17 @@
             descEl.textContent = "（无商品说明）";
           }
         })
-        .catch(() => {
+        .catch((e) => {
           if (!alive || !overlay.isConnected) return;
+          // 401/403 from items/<id>.json usually means R18 gate / not logged
+          // in; network timeouts and other statuses get a generic retry line
+          // so we don't blame R18 for a flaky request.
+          const msg = String((e && e.message) || e || "");
+          const status = /booth json (\d+)/.exec(msg)?.[1];
           descEl.textContent =
-            "商品说明加载失败（R18 商品需登录 Booth 后在官网查看）";
+            status === "401" || status === "403"
+              ? "商品说明加载失败（R18 商品需登录 Booth 后在官网查看）"
+              : "商品说明加载失败，请稍后重试";
         });
     }
 
