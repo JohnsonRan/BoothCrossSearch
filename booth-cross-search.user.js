@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.14
+// @version      2.14.15
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -1419,11 +1419,16 @@
         .bcs-media { flex: none; width: 100%; }
       }
       .cardImgWrap { position: relative; }
-      /* Seen = grey veil over the image; sits under the chip and star. */
+      /* Seen = light grey veil over the image; sits under the chip and star.
+         Kept soft so long grids stay scannable (chip still labels 已看). */
       .cardImgWrap.bcs-seen::after {
         content: ""; position: absolute; inset: 0; z-index: 4;
-        background: rgba(90, 90, 90, .55); pointer-events: none;
+        background: rgba(90, 90, 90, .32); pointer-events: none;
         border-radius: inherit;
+        transition: background .15s ease;
+      }
+      .cardImgWrap.bcs-seen:hover::after {
+        background: rgba(90, 90, 90, .16);
       }
       .bcs-badges {
         position: absolute; top: 6px; left: 6px; z-index: 5;
