@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.5
+// @version      2.14.6
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -187,17 +187,24 @@
   }
 
   const WISH_PAGE_CAP = 25;
+  // History panel used to re-walk every page on each open; for large wish
+  // lists that is tens of sequential requests. Within this window a
+  // fresh=true call reuses the last successful walk (setWished still mutates
+  // the in-memory set immediately, so stars toggled here stay correct).
+  const WISH_TTL_MS = 3 * 60e3;
   // Stable container, mutated in place by every (re)fetch and by setWished:
   // everything holding a reference (badge pass, open modal, panel closures)
   // sees fresh data without re-subscribing. Pass fresh=true to re-walk the
-  // endpoint (the history panel does, so likes made on booth.pm show up
-  // without a page reload); a failed refresh keeps the previous contents.
+  // endpoint when the TTL has expired (the history panel does, so likes made
+  // on booth.pm show up within a few minutes without a page reload); a failed
+  // refresh keeps the previous contents.
   const wishData = {
     ids: new Set(),
     byId: new Map(),
     loggedOut: false,
   };
-  const getWishList = refetchable(() => {
+  let wishFetchedAt = 0;
+  const fetchWishList = refetchable(() => {
     const ids = new Set();
     const byId = new Map();
     const done = (loggedOut) => {
@@ -206,6 +213,7 @@
       wishData.byId.clear();
       ids.forEach((id) => wishData.ids.add(id));
       byId.forEach((v, k) => wishData.byId.set(k, v));
+      wishFetchedAt = Date.now();
       return wishData;
     };
     const fetchPage = (page) =>
@@ -227,6 +235,20 @@
       });
     return fetchPage(1);
   });
+  // fresh=true only forces a re-walk after a successful load whose TTL has
+  // elapsed. First load (or an in-flight first load) shares the memoized
+  // promise — never cancels it mid-walk. Within the TTL window opening the
+  // history panel twice in a row is free.
+  function getWishList(fresh) {
+    if (
+      fresh &&
+      wishFetchedAt &&
+      Date.now() - wishFetchedAt > WISH_TTL_MS
+    ) {
+      return fetchWishList(true);
+    }
+    return fetchWishList(false);
+  }
   function getWishedIds() {
     return getWishList().then((w) => w.ids);
   }
