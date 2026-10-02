@@ -251,6 +251,9 @@
   function getWishList(fresh) {
     if (fresh) return fetchWishList(true);
     if (wishFetchedAt && Date.now() - wishFetchedAt > WISH_TTL_MS) {
+      // Bump now so callers during this re-walk join it instead of each
+      // starting another (a failed walk is evicted, so the soft path retries).
+      wishFetchedAt = Date.now();
       return fetchWishList(true);
     }
     return fetchWishList(false);
@@ -1511,32 +1514,6 @@
       };
     }
 
-    // Lazy one-shot fetch with a retry gate: `run()` kicks the fetch at most
-    // once, calls `onReady` on success, and on failure clears the in-flight
-    // flag so a later `run()` retries. `get()` returns the resolved value
-    // (or null while pending/failed). Shared by the wished-set and history
-    // badge subscriptions.
-    function lazySubscribe(fetchFn, onReady) {
-      let data = null;
-      let fetching = false;
-      return {
-        run() {
-          if (fetching || data !== null) return;
-          fetching = true;
-          fetchFn().then(
-            (d) => {
-              data = d ?? true;
-              onReady();
-            },
-            () => {
-              fetching = false;
-            },
-          );
-        },
-        get: () => data,
-      };
-    }
-
     const boothCache = new Map();
     const boothStore = persistentStore("booth", 24 * HOUR, 60);
     // Keep only the fields the modal renders — the raw payload runs tens of
@@ -1842,6 +1819,7 @@
       };
       getWishedIds()
         .then((set) => {
+          queueAllBadges(); // card ★s too, e.g. after an earlier failed walk
           if (!alive) return;
           starBtn.hidden = false;
           paintStar(set.has(String(seed.id)));
@@ -2161,7 +2139,6 @@
         queueBadgeRoots([document.body]);
       }
     }
-    const wishedSub = lazySubscribe(getWishedIds, queueAllBadges);
     const runWhenIdle = (fn) => {
       if (typeof requestIdleCallback === "function") {
         requestIdleCallback(fn, { timeout: 1500 });
@@ -2229,7 +2206,8 @@
         const wraps = new Set(badgeWraps);
         badgeWraps.clear();
         if (!roots.length && !wraps.size) return;
-        const wishedBadgeSet = wishedSub.get();
+        // Stars stay hidden until any wish walk has succeeded.
+        const wishedBadgeSet = wishFetchedAt ? wishData.ids : null;
         const seen = histData.ids;
         roots.forEach((root) => collectCardWraps(root, wraps));
         const list = [...wraps];
@@ -2261,10 +2239,10 @@
     });
     queueAllBadges();
     runWhenIdle(() => {
-      wishedSub.run();
-      // The seen veil reads the histData.ids global (in scheduleBadges), not a
-      // synchronous accessor, so history needs no lazySubscribe wrapper —
-      // getHistory is already single-in-flight and retries on reject.
+      // Both badge sources are read from shared containers (wishData,
+      // histData) in the paint pass; failed fetches retry on the next call
+      // (modal open / history panel), which repaints on success.
+      getWishedIds().then(queueAllBadges).catch(() => {});
       getHistory().then(queueAllBadges).catch(() => {});
     });
 
