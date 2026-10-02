@@ -56,8 +56,10 @@ request; a rejected promise is evicted from the cache so the next attempt can re
 results additionally persist across page loads via `persistentStore()` (one TTL'd JSON blob per
 source in `GM_getValue`/`GM_setValue`: search results 6h, Booth item JSON 24h, oldest-evicted size
 cap). Only fulfilled values are persisted — errors, including RipperStore's not-authorised, never
-outlive the page. `get()` re-checks TTL on every read (not only on first blob load) so a long-lived
-tab cannot serve expired hits from the in-memory map. Disk writes go through
+outlive the page. `get()` re-checks TTL on every read (not only on first blob load), and
+`memoized()` keeps only in-flight (or unpersistable) promises in its map — store hits aren't
+memoized and persisted results are evicted from it — so a long-lived tab cannot serve expired
+hits from memory. Disk writes go through
 `gmWriteJsonDeferred` (coalesced ~400ms per key, flushed on `visibilitychange`/`pagehide`) so a
 modal open that touches archive + multiple caches does not re-stringify every blob synchronously.
 Everything storage-backed degrades gracefully when the GM value grants are missing (`canStore`).

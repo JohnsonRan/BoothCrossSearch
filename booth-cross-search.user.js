@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.20
+// @version      2.14.21
 // @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -444,16 +444,18 @@
   function memoized(map, id, run, store) {
     if (map.has(id)) return map.get(id);
 
+    // Store hits are not memoized and persisted results leave the memo map,
+    // so the store's per-read TTL check also covers long-lived tabs. Only
+    // in-flight (or unpersistable, e.g. no GM grants) promises stay here.
     const hit = store && store.get(id);
-    if (hit !== undefined) {
-      const cached = Promise.resolve(hit);
-      map.set(id, cached);
-      return cached;
-    }
+    if (hit !== undefined) return Promise.resolve(hit);
 
     const promise = run().then(
       (d) => {
-        if (store) store.set(id, d);
+        if (store) {
+          store.set(id, d);
+          if (store.get(id) !== undefined) map.delete(id);
+        }
         return d;
       },
       (e) => {
