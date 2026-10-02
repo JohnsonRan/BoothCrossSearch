@@ -683,7 +683,9 @@
     (e) => {
       if (e.key !== "Escape" || !activeSearchPanel) return;
       e.preventDefault();
-      e.stopPropagation();
+      // Immediate: the overlay dispatcher is a sibling document-capture
+      // listener (registered later), which plain stopPropagation can't stop.
+      e.stopImmediatePropagation();
       activeSearchPanel.close();
     },
     true,
@@ -1657,6 +1659,14 @@
         const top = overlayStack[overlayStack.length - 1];
         if (e.key === "Escape") {
           e.stopPropagation();
+          // An open filter dropdown eats the first Escape (the input's own
+          // keydown never sees it — this capture listener runs first).
+          const drop = e.target.closest?.(".bcs-filter-wrap")
+            ?.querySelector(".bcs-filter-drop");
+          if (drop && !drop.hidden) {
+            drop.hidden = true;
+            return;
+          }
           top.close();
         } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
           if (!top.onArrow) return;
@@ -1678,6 +1688,9 @@
         onArrow,
         close: () => {
           el.remove();
+          // The body-fixed search panel would outlive its modal (× click
+          // stops propagation before the panel's outside-click handler).
+          closePanels();
           const i = overlayStack.indexOf(entry);
           if (i !== -1) overlayStack.splice(i, 1);
           if (!overlayStack.length)
@@ -2404,10 +2417,6 @@
         if (e.key === "Enter") {
           clearTimeout(saveTimer);
           saveFilterHist(filter.value);
-        } else if (e.key === "Escape" && !drop.hidden) {
-          // Swallow: close just the dropdown, not the whole panel.
-          e.stopPropagation();
-          drop.hidden = true;
         }
       });
       overlay.addEventListener("mousedown", (e) => {
