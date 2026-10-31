@@ -44,8 +44,8 @@ host view is ready (Booth waits for `window` `load`; BoothDex calls it on dialog
 
 Two external APIs, each with a real gotcha:
 
-- **VRCPirate** (`api-v2.vrcpirate.com`) — no login required; results filtered client-side by
-  `boothID` since the search endpoint isn't an exact match.
+- **VRCPirate** (`api-v3.vrcpirate.com`) — no login required; `searchBy=boothID` scopes server search
+  to `boothID` (still a substring match), then results are filtered client-side for exact `boothID`.
 - **RipperStore** (`forum.ripper.store`) — has no real auth-check endpoint. Login state is inferred
   from the search response itself: a `{status:{code:"not-authorised"}}` envelope means logged out.
   The `sortBy=relevance` query param is a no-op server-side — results are always sorted client-side

@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      3.0.1
+// @version      3.0.2
 // @description  在 Booth 商品页与 BoothDex 商品详情中查询 VRCPirate / RipperStore 同 ID 资源。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
 // @match        *://*.booth.pm/*items/*
 // @match        *://boothdex.ihtw.moe/*
-// @connect      api-v2.vrcpirate.com
+// @connect      api-v3.vrcpirate.com
 // @connect      forum.ripper.store
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
@@ -287,10 +287,13 @@
       itemId,
       () =>
         fetchJson(
-          `https://api-v2.vrcpirate.com/assets?page=1&search=${encodeURIComponent(itemId)}`,
-        ).then(({ json }) =>
-          (json.data || []).filter((a) => String(a.boothID) === itemId),
-        ),
+          `https://api-v3.vrcpirate.com/assets?page=1&search=${encodeURIComponent(itemId)}&searchBy=boothID`,
+        ).then(({ status, json }) => {
+          if (status !== 200 || !Array.isArray(json?.data)) {
+            throw new Error(`vrcp ${status}`);
+          }
+          return json.data.filter((a) => String(a.boothID) === itemId);
+        }),
       vrcpStore,
     );
   }
