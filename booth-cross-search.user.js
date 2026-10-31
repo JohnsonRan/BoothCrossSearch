@@ -1,16 +1,14 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      2.14.21
-// @description  在 Booth 商品页标题下方增加查 VRCPirate/RipperStore 同ID资源；在 VRCatalogue 点击图片弹出商品详情。
+// @version      3.0.0
+// @description  在 Booth 商品页与 BoothDex 商品详情中查询 VRCPirate / RipperStore 同 ID 资源。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
 // @match        *://*.booth.pm/*items/*
-// @match        *://vrcatalogue.com/*
+// @match        *://boothdex.ihtw.moe/*
 // @connect      api-v2.vrcpirate.com
 // @connect      forum.ripper.store
-// @connect      booth.pm
-// @connect      accounts.booth.pm
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -30,17 +28,27 @@
     (document.head || document.documentElement).appendChild(style);
   }
 
+  // Token names follow BoothDex's shadcn variables (--popover, --foreground,
+  // --muted-foreground, --accent, --muted, --border, --warning); none of them
+  // are defined on booth.pm, so booth.pm falls through to the light hex
+  // defaults while BoothDex adapts to both its light and dark themes.
   addStyle(`
-    .bcs-bar { position: relative; display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; align-items: center;
-      font-family: -apple-system, "Helvetica Neue", Arial, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+    .bcs-bar {
+      position: relative; display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; align-items: center;
+      font-family: -apple-system, "Helvetica Neue", Arial, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    }
+    [role="dialog"] .bcs-bar {
+      margin: 0 0 1rem; font-family: inherit;
+    }
     .bcs-btn {
       display: inline-flex; align-items: center; gap: 6px;
-      padding: 7px 16px; border-radius: 20px; font-size: 13px; font-weight: 700;
-      cursor: pointer; border: 1px solid var(--border, #dcdcdc); color: var(--text, #222); background: var(--panel, #fff);
+      padding: 7px 16px; border-radius: 20px; font-size: 13px; font-weight: 700; font-family: inherit;
+      cursor: pointer; border: 1px solid var(--border, #dcdcdc);
+      color: var(--foreground, #222); background: var(--popover, #fff);
       line-height: 1.4; transition: background .15s, border-color .15s;
     }
-    .bcs-btn:hover { background: var(--item-hover, #f5f5f5); border-color: var(--border, #c8c8c8); }
-    .bcs-btn:active { background: var(--item-hover, #ececec); }
+    .bcs-btn:hover { background: var(--accent, #f5f5f5); border-color: var(--border, #c8c8c8); }
+    .bcs-btn:active { background: var(--muted, #ececec); }
     .bcs-btn .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #bbb; transition: background .2s; }
     .bcs-btn .dot.pending { background: #bbb; animation: bcs-pulse 1s ease-in-out infinite; }
     .bcs-btn .dot.ok { background: #2e9e44; }
@@ -51,44 +59,45 @@
     .bcs-btn .bcs-cnt {
       min-width: 16px; padding: 0 5px; border-radius: 8px; text-align: center;
       font-size: 11px; font-weight: 700; line-height: 16px;
-      background: var(--item-hover, #efefef); color: var(--muted, #777);
+      background: var(--muted, #efefef); color: var(--muted-foreground, #777);
     }
-    .bcs-warn { font-size: 11px; color: #b8860b; font-weight: 600; text-decoration: none; }
+    .bcs-btn .bcs-cnt[hidden] { display: none; }
+    .bcs-warn { font-size: 11px; color: var(--warning, #b8860b); font-weight: 600; text-decoration: none; }
     .bcs-warn:hover { text-decoration: underline; }
-    /* Fixed + JS-placed so modal overflow / viewport edges don't clip it.
-       z-index sits above the vrcatalogue overlay (99999). */
     .bcs-panel {
       position: fixed; z-index: 100001;
-      background: var(--panel, #fff); border: 1px solid var(--border, #ddd); border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.15);
+      background: var(--popover, #fff); border: 1px solid var(--border, #ddd); border-radius: 8px;
+      box-shadow: 0 6px 20px rgba(0,0,0,.22);
       min-width: 280px; max-width: min(420px, calc(100vw - 16px)); max-height: 320px; overflow-y: auto;
-      box-sizing: border-box;
+      overscroll-behavior: contain; box-sizing: border-box; font-family: inherit;
     }
-    .bcs-panel-item { display: block; padding: 8px 10px; border-bottom: 1px solid var(--border, #eee); text-decoration: none; color: var(--text, #222); }
+    .bcs-panel-item {
+      display: block; padding: 8px 10px; border-bottom: 1px solid var(--border, #eee);
+      text-decoration: none; color: var(--foreground, #222);
+    }
     .bcs-panel-item:last-child { border-bottom: none; }
-    .bcs-panel-item:hover { background: var(--item-hover, #f5f5f5); }
+    .bcs-panel-item:hover { background: var(--accent, #f5f5f5); }
     .bcs-panel-item .t { font-size: 13px; font-weight: 600; display: block; }
-    .bcs-panel-item .s { font-size: 11px; color: var(--muted, #888); }
-    .bcs-panel-empty { padding: 10px; font-size: 13px; color: var(--muted, #888); }
+    .bcs-panel-item .s { font-size: 11px; color: var(--muted-foreground, #888); }
+    .bcs-panel-empty { padding: 10px; font-size: 13px; color: var(--muted-foreground, #888); }
     .bcs-desc.bcs-collapsed { max-height: 240px !important; overflow: hidden !important; position: relative; }
-    .bcs-desc.bcs-desc-hidden { display: none !important; }
     .bcs-desc.bcs-collapsed::after {
       content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 90px;
-      background: linear-gradient(rgba(0,0,0,0), var(--panel, #fff) 85%); pointer-events: none;
+      background: linear-gradient(rgba(0,0,0,0), var(--popover, #fff) 85%); pointer-events: none;
     }
     .bcs-toggle {
       display: flex; align-items: center; justify-content: center; gap: 6px;
       width: 100%; margin: 12px 0 4px; padding: 10px 16px;
-      border: 1px solid var(--border, #e4e4e7); border-radius: 10px; background: var(--panel, #fafafa);
-      color: var(--text, #222); cursor: pointer; font-size: 13px; font-weight: 700; line-height: 1.4;
+      border: 1px solid var(--border, #e4e4e7); border-radius: 10px; background: var(--popover, #fafafa);
+      color: var(--foreground, #222); cursor: pointer; font-size: 13px; font-weight: 700; line-height: 1.4;
       font-family: -apple-system, "Helvetica Neue", Arial, "Hiragino Sans", "Noto Sans JP", sans-serif;
       transition: background .15s, border-color .15s, box-shadow .15s, transform .05s;
     }
-    .bcs-toggle:hover { background: var(--item-hover, #f4f4f5); border-color: var(--border, #d4d4d8); box-shadow: 0 1px 5px rgba(0,0,0,.06); }
+    .bcs-toggle:hover { background: var(--accent, #f4f4f5); border-color: var(--border, #d4d4d8); box-shadow: 0 1px 5px rgba(0,0,0,.06); }
     .bcs-toggle:active { transform: translateY(1px); }
-    .bcs-toggle .bcs-count { color: var(--muted, #888); font-weight: 600; }
+    .bcs-toggle .bcs-count { color: var(--muted-foreground, #888); font-weight: 600; }
     .bcs-toggle .bcs-chev { font-size: 10px; transition: transform .2s ease; }
     .bcs-toggle.is-open .bcs-chev { transform: rotate(180deg); }
-    .bcs-toggle-sticky { position: sticky; top: 0; z-index: 3; margin-top: 0; }
     .bcs-var-hidden { display: none !important; }
   `);
 
@@ -117,12 +126,11 @@
     return a;
   }
 
-  function gmGet(url, opts = {}) {
+  function gmGet(url) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
-        method: opts.method || "GET",
+        method: "GET",
         url,
-        headers: opts.headers,
         timeout: 10000,
         onload: resolve,
         onerror: reject,
@@ -144,193 +152,12 @@
     });
   }
 
-  // Singleton in-flight promise for a whole-endpoint fetch, memoized until it
-  // rejects: `run` fires at most once, callers share the result, and a
-  // rejection evicts the promise so the next call (or a `fresh` one) can
-  // retry. The endpoint analog of the per-id `memoized()` above.
-  function refetchable(run) {
-    let promise = null;
-    return (fresh) => {
-      if (!promise || fresh) {
-        const p = run().catch((e) => {
-          if (promise === p) promise = null;
-          throw e;
-        });
-        promise = p;
-      }
-      return promise;
-    };
-  }
-
-  // ---- Booth wish list ("スキ!") sync. Booth is the single source of
-  // truth: star state everywhere = membership in the id set from
-  // wish_list_name_items.json (paginated, 20/page — pages are walked to a
-  // sanity cap; GM_xmlhttpRequest sends the user's booth cookies), fetched
-  // lazily and re-walked when the history panel opens. The response carries
-  // full item cards, kept in `byId` so the panel's wish strip needs no
-  // per-item fetches. Logged out the endpoint 401s — resolved as an empty
-  // list so stars just render unfilled. Endpoints are private —
-  // if Booth changes them only the star feature degrades; search and history
-  // are unaffected.
-  // Shared projection of a Booth card object (wish + history endpoints
-  // return the same shape) down to what the tiles render.
-  function cardEntry(it) {
-    return {
-      id: String(it.id),
-      title: it.name || "",
-      img: (it.thumbnail_image_urls && it.thumbnail_image_urls[0]) || "",
-      price: it.price || "",
-      shop: (it.shop && it.shop.name) || "",
-    };
-  }
-
-  function localCardEntry(id, entry = {}, fallbackTitle = `Booth #${id}`) {
-    id = String(id);
-    return {
-      id,
-      title: entry.title || fallbackTitle,
-      img: entry.img || "",
-      price: entry.price || "",
-      shop: entry.shop || "",
-    };
-  }
-
-  const WISH_PAGE_CAP = 25;
-  // Soft-path (badge / modal) reuse window: without a force flag, a successful
-  // walk is shared until this elapses, so long-lived tabs still catch up on
-  // booth.pm likes without the history panel, while rapid modal opens do not
-  // re-walk every page. Force-refresh (history panel) ignores the TTL.
-  // setWished still mutates the in-memory set immediately either way.
-  const WISH_TTL_MS = 3 * 60e3;
-  // Stable container, mutated in place by every (re)fetch and by setWished:
-  // everything holding a reference (badge pass, open modal, panel closures)
-  // sees fresh data without re-subscribing. Pass fresh=true to always re-walk
-  // the endpoint (the history panel does, so likes made on booth.pm show up
-  // as soon as the panel opens); a failed refresh keeps the previous contents.
-  const wishData = {
-    ids: new Set(),
-    byId: new Map(),
-    loggedOut: false,
-  };
-  let wishFetchedAt = 0;
-  const fetchWishList = refetchable(() => {
-    const ids = new Set();
-    const byId = new Map();
-    const done = (loggedOut) => {
-      wishData.loggedOut = !!loggedOut;
-      wishData.ids.clear();
-      wishData.byId.clear();
-      ids.forEach((id) => wishData.ids.add(id));
-      byId.forEach((v, k) => wishData.byId.set(k, v));
-      wishFetchedAt = Date.now();
-      return wishData;
-    };
-    const fetchPage = (page) =>
-      fetchJson(
-        `https://accounts.booth.pm/wish_list_name_items.json?page=${page}`,
-      ).then(({ status, json }) => {
-        if (status === 401) return done(true); // logged out -> empty
-        if (status !== 200 || !json || !Array.isArray(json.items)) {
-          throw new Error(`wish_list_name_items ${status}`);
-        }
-        for (const it of json.items) {
-          const entry = cardEntry(it);
-          ids.add(entry.id);
-          byId.set(entry.id, entry);
-        }
-        const next = json.pagination && json.pagination.next_page;
-        if (next && next <= WISH_PAGE_CAP) return fetchPage(next);
-        return done(false);
-      });
-    return fetchPage(1);
-  });
-  // fresh=true (history panel): always re-walk so booth.pm likes appear as
-  // soon as the panel opens. Soft path (badge/modal via getWishedIds): reuse
-  // the memoized walk until WISH_TTL_MS elapses, then re-walk once so a long
-  // session still converges without opening the panel.
-  function getWishList(fresh) {
-    if (fresh) return fetchWishList(true);
-    if (wishFetchedAt && Date.now() - wishFetchedAt > WISH_TTL_MS) {
-      // Bump now so callers during this re-walk join it instead of each
-      // starting another (a failed walk is evicted, so the soft path retries).
-      wishFetchedAt = Date.now();
-      return fetchWishList(true);
-    }
-    return fetchWishList(false);
-  }
-  function getWishedIds() {
-    return getWishList().then((w) => w.ids);
-  }
-
-  // Rails CSRF token, scraped from any booth.pm page and memoized. A 422 on
-  // a write means it went stale (or there is no session) — refreshed and
-  // retried once by setWished.
-  const getCsrfToken = refetchable(() =>
-    gmGet("https://booth.pm/en").then((res) => {
-      const m = (res.responseText || "").match(
-        /<meta name="csrf-token" content="([^"]+)"/,
-      );
-      if (!m) throw new Error("no csrf token");
-      return m[1];
-    }),
-  );
-
-  // Authenticated Booth write with the standard Rails dance: CSRF header,
-  // and one refresh-and-retry on 422 (stale token / no session).
-  function boothWrite(url, method) {
-    const ok = (res) => res.status >= 200 && res.status < 300;
-    const send = (token) =>
-      gmGet(url, {
-        method,
-        headers: {
-          "X-CSRF-Token": token,
-          Accept: "application/json",
-          "X-Requested-With": "XMLHttpRequest",
-        },
-      });
-    return getCsrfToken()
-      .then(send)
-      .then((res) => {
-        if (ok(res)) return;
-        if (res.status !== 422) throw new Error(`${method} ${url}: ${res.status}`);
-        return getCsrfToken(true)
-          .then(send)
-          .then((res2) => {
-            if (!ok(res2)) {
-              throw new Error(`${method} ${url}: ${res2.status}`);
-            }
-          });
-      });
-  }
-
-  function setWished(itemId, on, entry) {
-    const id = String(itemId);
-    return boothWrite(
-      `https://booth.pm/items/${id}/wish_list.json`,
-      on ? "POST" : "DELETE",
-    ).then(() =>
-      getWishedIds().then((set) => {
-        if (on) {
-          set.add(id);
-          if (entry) wishData.byId.set(id, localCardEntry(id, entry, ""));
-        } else {
-          set.delete(id);
-          wishData.byId.delete(id);
-        }
-      }),
-    );
-  }
-
   // GM value storage may be missing entirely (manager without the grant, or
   // an older installed script version whose header lacked it) — persistence
-  // and history both degrade to no-ops/hidden rather than breaking search.
+  // degrades to in-memory per-tab caching rather than breaking search.
   const canStore =
     typeof GM_getValue === "function" && typeof GM_setValue === "function";
 
-  // Guarded JSON (de)serialization over GM values — the per-source caches and
-  // the history list share this so the try/catch plumbing lives once. Values
-  // go through JSON strings (not raw objects) since not every manager
-  // serializes objects.
   function gmReadJson(key, fallback) {
     try {
       return JSON.parse(GM_getValue(key, "null")) ?? fallback;
@@ -346,10 +173,8 @@
     }
   }
 
-  // Coalesce bursty GM writes (modal open → markSeen + search caches) into one
-  // stringify per key. Memory maps update immediately; disk catches up after a
-  // short quiet period, or sooner when the tab hides / unloads so a crashy
-  // close still keeps recent views.
+  // Coalesce bursty GM writes into one stringify per key; flush immediately
+  // when the tab hides or unloads.
   const STORE_FLUSH_MS = 400;
   const pendingGmWrites = new Map(); // key -> { value, timer }
   function gmWriteJsonDeferred(key, value) {
@@ -379,9 +204,6 @@
   });
   window.addEventListener("pagehide", flushGmWrites);
 
-  // Evict oldest-written entries (by their `.t` timestamp) until `map` holds at
-  // most `max`. Shared by every GM blob that caps its size — the per-source
-  // persistentStore and the history archive both keep the same {t,d} shape.
   function evictOldest(map, max) {
     const ids = Object.keys(map);
     if (ids.length <= max) return;
@@ -390,11 +212,8 @@
   }
 
   // TTL'd per-item cache persisted as one JSON blob per source under a
-  // `bcs-cache-<name>` GM value. Expired entries are pruned once on first
-  // load; `max` caps the blob by evicting oldest-written entries so a long
-  // browsing session can't grow it unbounded. Writes are deferred (see
-  // gmWriteJsonDeferred) so a multi-lookup modal open doesn't re-serialize
-  // the whole blob three times in one turn.
+  // `bcs-cache-<name>` GM value. Expired entries are pruned on first load and
+  // re-checked on every read; `max` caps blob size by evicting oldest entries.
   function persistentStore(name, ttl, max) {
     if (!canStore) return { get: () => undefined, set: () => {} };
     const key = `bcs-cache-${name}`;
@@ -411,9 +230,6 @@
     };
     return {
       get(id) {
-        // Re-check TTL on every read: load() only prunes once per page life,
-        // so a tab left open past the TTL would otherwise keep serving stale
-        // hits from the in-memory map.
         const map = load();
         const entry = map[id];
         if (!entry) return undefined;
@@ -432,15 +248,10 @@
     };
   }
 
-  // VRCPirate needs no login to search. RipperStore's search API returns a
-  // {status:{code:"not-authorised"}} envelope when logged out instead of the
-  // usual posts payload, so login state is read straight off that response.
   // Results memoize per item id on a shared in-flight promise so an auto-check
   // and a later button click never fire the same request twice; a failure
-  // clears the cache so the next click can retry instead of staying rejected.
-  // An optional persistentStore backs the memo across page loads — only
-  // successful results are persisted, so a cached "not-authorised" can never
-  // outlive an actual login.
+  // clears the cache so the next click can retry. Only fulfilled results are
+  // persisted, so RipperStore's "not-authorised" never outlives a login.
   function memoized(map, id, run, store) {
     if (map.has(id)) return map.get(id);
 
@@ -487,186 +298,43 @@
   const ripperCache = new Map();
   const ripperStore = persistentStore("ripper", 6 * HOUR, 120);
   function getRipperResult(itemId) {
-    return memoized(ripperCache, itemId, () => {
-      const params = new URLSearchParams({
-        in: "titlesposts",
-        term: itemId,
-        matchWords: "all",
-        by: "",
-        categories: "",
-        searchChildren: "false",
-        hasTags: "",
-        replies: "",
-        repliesFilter: "atleast",
-        timeFilter: "newer",
-        timeRange: "",
-        sortBy: "relevance",
-        sortDirection: "desc",
-        showAs: "posts",
-        _: String(Date.now()),
-      });
-      const url = `https://forum.ripper.store/api/search?${params}`;
-      return fetchJson(url).then(({ json }) => {
-        if (json.status && json.status.code === "not-authorised") {
-          const err = new Error("not-authorised");
-          err.notAuthorised = true;
-          throw err;
-        }
-        const posts = json.posts || [];
-        posts.sort((a, b) => b.timestamp - a.timestamp);
-        return posts;
-      });
-    }, ripperStore);
+    return memoized(
+      ripperCache,
+      itemId,
+      () => {
+        const params = new URLSearchParams({
+          in: "titlesposts",
+          term: itemId,
+          matchWords: "all",
+          by: "",
+          categories: "",
+          searchChildren: "false",
+          hasTags: "",
+          replies: "",
+          repliesFilter: "atleast",
+          timeFilter: "newer",
+          timeRange: "",
+          sortBy: "relevance",
+          sortDirection: "desc",
+          showAs: "posts",
+          _: String(Date.now()),
+        });
+        const url = `https://forum.ripper.store/api/search?${params}`;
+        return fetchJson(url).then(({ json }) => {
+          if (json.status && json.status.code === "not-authorised") {
+            const err = new Error("not-authorised");
+            err.notAuthorised = true;
+            throw err;
+          }
+          const posts = json.posts || [];
+          posts.sort((a, b) => b.timestamp - a.timestamp);
+          return posts;
+        });
+      },
+      ripperStore,
+    );
   }
 
-  // booth.pximg.net serves a whitelist of resize variants via a /c/<spec>/
-  // path prefix — arbitrary sizes 403, and the item JSON's "resized" is a
-  // blurry c/72x72. Callers pass canonical full-size URLs around and each
-  // render site applies the variant it needs. Non-Booth-CDN URLs pass
-  // through untouched.
-  function boothImgVariant(url, spec) {
-    if (!url || !url.includes("booth.pximg.net/")) return url || "";
-    const bare = url.replace(/booth\.pximg\.net\/c\/[^/]+\//, "booth.pximg.net/");
-    return spec ? bare.replace("booth.pximg.net/", `booth.pximg.net/${spec}/`) : bare;
-  }
-  // Whitelisted variant sized for the history grid (130px+ cells on hi-DPI).
-  const HIST_IMG_SPEC = "c/300x300_a2_g5";
-  // Modal-sized Booth CDN variant; fullscreen zoom still uses originals.
-  const MODAL_IMG_SPEC = "c/620x620";
-
-  // "Recently viewed" comes from Booth's own server-side history
-  // (booth.pm/history.json, same card shape as the wish endpoint,
-  // unpaginated): Booth records item-page visits natively, and vrcatalogue
-  // modal opens hit items/<id>.json with cookies, which Booth records too.
-  // Logged out it returns 200 + [] — indistinguishable from an empty
-  // history, so login state comes from the wish endpoint's 401 instead
-  // (wishData.loggedOut). No local copy is kept.
-  const histData = { list: [], ids: new Set() };
-  const getHistory = refetchable(() =>
-    fetchJson("https://booth.pm/history.json").then(({ status, json }) => {
-      if (status !== 200 || !Array.isArray(json)) {
-        throw new Error(`history ${status}`);
-      }
-      histData.list = json.map(cardEntry);
-      histData.ids = new Set(histData.list.map((e) => e.id));
-      return histData;
-    }),
-  );
-  // Local, unbounded-ish view archive: Booth's own history.json only keeps the
-  // newest ~20 items, so anything viewed beyond that falls off the server list
-  // — disappearing from the panel's 最近 section AND losing its card "已看"
-  // veil once evicted. This keeps a private, GM-backed copy of every viewed
-  // item so both survive: it feeds the 更早 panel section (search-only) and is
-  // unioned with histData.ids when painting the veil (`histArchive.has`), so a
-  // card stays greyed out no matter how many items were viewed after it. It
-  // still does NOT feed the panel's default ordering (that stays Booth's 最近
-  // list). Entries are keyed by id and merged on re-view (a later, richer
-  // record overwrites earlier partial seed data) with the view time bumped, so
-  // the archive stays newest-first. Oldest are evicted past ARCHIVE_MAX.
-  const ARCHIVE_KEY = "bcs-hist-archive";
-  const ARCHIVE_MAX = 4000;
-  const histArchive = {
-    // In-memory mirror of the GM blob, parsed once then kept in sync by
-    // record/clear — so a burst of filter keystrokes doesn't re-JSON.parse the
-    // whole archive per render (mirrors persistentStore's lazy single load).
-    _cache: null,
-    // Memoized newest-first array from list(); invalidated on record/clear so a
-    // burst of filter keystrokes reuses one sort instead of re-spreading and
-    // re-sorting the whole archive (up to ARCHIVE_MAX entries) every render.
-    _sorted: null,
-    _load() {
-      if (!this._cache) this._cache = canStore ? gmReadJson(ARCHIVE_KEY, {}) : {};
-      return this._cache;
-    },
-    // Returns all archived entries, newest-viewed first. Only called when the
-    // filter box is non-empty, so the sort cost stays off the default open.
-    list() {
-      if (this._sorted) return this._sorted;
-      const map = this._load();
-      this._sorted = Object.keys(map)
-        .map((id) => ({ ...map[id].d, id }))
-        .sort((a, b) => (map[b.id].t || 0) - (map[a.id].t || 0));
-      return this._sorted;
-    },
-    // O(1) membership, backing the card veil alongside histData.ids. Reads the
-    // parsed cache (no re-parse per card in a badge batch); false without storage.
-    has(id) {
-      return Object.prototype.hasOwnProperty.call(this._load(), String(id));
-    },
-    record(id, entry) {
-      if (!canStore || !entry) return;
-      id = String(id);
-      const map = this._load();
-      const prev = map[id] && map[id].d;
-      // Merge so a partial seed record ({title,img}) doesn't clobber a richer
-      // one ({title,img,price,shop}) written moments later, or vice-versa.
-      const merged = localCardEntry(id, {
-        title: entry.title || (prev && prev.title),
-        img: entry.img || (prev && prev.img),
-        price: entry.price || (prev && prev.price),
-        shop: entry.shop || (prev && prev.shop),
-      });
-      delete merged.id; // id is the map key; keep the blob lean
-      map[id] = { t: Date.now(), d: merged };
-      evictOldest(map, ARCHIVE_MAX);
-      this._sorted = null; // order changed — list() rebuilds lazily
-      // Deferred: opening several modals in a row rewrites the same blob;
-      // coalesce so a 4000-entry archive isn't re-stringified per click.
-      gmWriteJsonDeferred(ARCHIVE_KEY, map);
-    },
-    clear() {
-      this._cache = {};
-      this._sorted = null;
-      // Drop any pending deferred write for this key so a stale flush can't
-      // resurrect the archive after a clear-all.
-      const pending = pendingGmWrites.get(ARCHIVE_KEY);
-      if (pending) {
-        clearTimeout(pending.timer);
-        pendingGmWrites.delete(ARCHIVE_KEY);
-      }
-      if (canStore) gmWriteJson(ARCHIVE_KEY, {});
-    },
-  };
-
-  // Instant local echo for a view made this page load: the modal may serve
-  // the item from the 24h persistent cache without ever hitting Booth, so
-  // this is also the only "seen" signal for those. When seed/card data is
-  // available, keep the history panel responsive until the next server refresh.
-  // The same entry also lands in the local archive (histArchive) so it stays
-  // searchable after Booth evicts it from the newest-20 history.json.
-  function markSeen(id, entry) {
-    id = String(id);
-    histData.ids.add(id);
-    if (!entry) return;
-    histArchive.record(id, entry);
-    histData.list = [
-      localCardEntry(id, entry),
-      ...histData.list.filter((e) => e.id !== id),
-    ];
-  }
-  // Server-side wipe: DELETE on the same endpoint empties Booth's history
-  // for the whole account (irreversible). A successful clear answers with
-  // a 302 to booth.pm/history that GM_xmlhttpRequest doesn't follow
-  // cleanly (onload fires with status 0), so boothWrite rejects even on
-  // success — the catch refetches and lets the server's actual list
-  // decide. Local mirrors are cleared so the panel and card veils react
-  // without waiting on another fetch.
-  function clearHistory() {
-    return boothWrite("https://booth.pm/history.json", "DELETE")
-      .catch((e) =>
-        getHistory(true).then((h) => {
-          if (h.list.length) throw e; // genuinely not cleared
-        }),
-      )
-      .then(() => {
-        histData.list = [];
-        histData.ids = new Set();
-        histArchive.clear(); // the local mirror goes with the server wipe
-      });
-  }
-
-  // Single source of truth for the two ways a search request can fail, so the
-  // click handler and autoCheck don't each re-derive (and drift on) the copy.
   const RETRY_MSG = "查询失败，点击重试";
   const RIPPER_LOGIN_MSG = "请先登录 RipperStore";
   function classifyRipperError(e) {
@@ -676,9 +344,8 @@
     return { auth: false, message: RETRY_MSG };
   }
 
-  // At most one search result panel (Booth page or modal). Tracked so Escape
-  // can close it before the overlay stack, and so a second open replaces the
-  // first cleanly even when the panel is body-fixed (not a child of `bar`).
+  // At most one search result panel. Capture-phase Escape closes the panel
+  // first without letting BoothDex's Radix Dialog dismiss underneath it.
   let activeSearchPanel = null;
   function closePanels() {
     if (activeSearchPanel) activeSearchPanel.close();
@@ -687,9 +354,11 @@
     "keydown",
     (e) => {
       if (e.key !== "Escape" || !activeSearchPanel) return;
+      if (!activeSearchPanel.panel.isConnected) {
+        activeSearchPanel.close();
+        return;
+      }
       e.preventDefault();
-      // Immediate: the overlay dispatcher is a sibling document-capture
-      // listener (registered later), which plain stopPropagation can't stop.
       e.stopImmediatePropagation();
       activeSearchPanel.close();
     },
@@ -720,67 +389,81 @@
         panel.appendChild(a);
       }
     }
-    // Body-fixed: bar may sit inside a scrolling modal that would clip
-    // position:absolute descendants.
-    document.body.appendChild(panel);
-    const place = () => {
-      if (!panel.isConnected) return;
-      const r = bar.getBoundingClientRect();
-      const maxH = Math.min(320, Math.max(140, window.innerHeight * 0.4));
-      panel.style.maxHeight = `${maxH}px`;
-      const width = Math.min(
-        Math.max(280, r.width),
-        Math.min(420, window.innerWidth - 16),
-      );
-      panel.style.width = `${width}px`;
-      const ph = panel.offsetHeight;
-      let left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
-      let top = r.bottom + 4;
-      if (top + ph > window.innerHeight - 8) {
-        const above = r.top - ph - 4;
-        top = above >= 8 ? above : Math.max(8, window.innerHeight - ph - 8);
-      }
-      panel.style.left = `${left}px`;
-      panel.style.top = `${top}px`;
-    };
-    place();
-    const onReposition = () => place();
-    window.addEventListener("resize", onReposition);
-    // Capture scroll from modal/body so the panel tracks the bar.
-    window.addEventListener("scroll", onReposition, true);
+    // Inside BoothDex's Radix Dialog, mount into the dialog itself rather than
+    // document.body: Radix sets body pointer-events:none, locks outside wheel
+    // scroll (RemoveScroll), and treats outside pointerdowns as dialog-dismiss.
+    const dialog = bar.closest('[role="dialog"]');
+    if (dialog) panel.style.position = "absolute";
+    (dialog || document.body).appendChild(panel);
     const close = () => {
       panel.remove();
       document.removeEventListener("click", onDocClick);
-      window.removeEventListener("resize", onReposition);
-      window.removeEventListener("scroll", onReposition, true);
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
       if (activeSearchPanel && activeSearchPanel.panel === panel) {
         activeSearchPanel = null;
       }
     };
+    function place() {
+      if (!panel.isConnected || !bar.isConnected) {
+        close();
+        return;
+      }
+      const r = bar.getBoundingClientRect();
+      let originX = 0;
+      let originY = 0;
+      let boxW = window.innerWidth;
+      let boxH = window.innerHeight;
+      if (dialog) {
+        const hr = dialog.getBoundingClientRect();
+        originX = hr.left + dialog.clientLeft;
+        originY = hr.top + dialog.clientTop;
+        boxW = dialog.clientWidth;
+        boxH = dialog.clientHeight;
+      }
+      if (r.bottom <= originY || r.top >= originY + boxH) {
+        close();
+        return;
+      }
+      const maxH = Math.min(320, Math.max(140, boxH * 0.45));
+      panel.style.maxHeight = `${maxH}px`;
+      const width = Math.min(
+        Math.max(280, r.width),
+        Math.min(420, boxW - 16),
+      );
+      panel.style.width = `${width}px`;
+      const ph = panel.offsetHeight;
+      const barLeft = r.left - originX;
+      const barTop = r.top - originY;
+      const barBottom = r.bottom - originY;
+      const left = Math.max(8, Math.min(barLeft, boxW - width - 8));
+      let top = barBottom + 4;
+      if (top + ph > boxH - 8) {
+        const above = barTop - ph - 4;
+        top = above >= 8 ? above : Math.max(8, boxH - ph - 8);
+      }
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+    }
     const onDocClick = (ev) => {
       if (!panel.contains(ev.target)) close();
     };
     activeSearchPanel = { panel, close };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
     // Defer so the opening click doesn't immediately dismiss the panel.
     setTimeout(() => document.addEventListener("click", onDocClick), 0);
   }
 
-  // The VRCPirate/RipperStore button bar, shared by the Booth item page and the
-  // vrcatalogue detail modal. Buttons start disabled and only get re-enabled by
-  // runAutoCheck once we know the source is reachable/logged-in, so a click
-  // here can trust that login already passed. Call the returned .autoCheck()
-  // when the host page is ready (Booth waits for window load, the modal runs
-  // it immediately).
+  // The VRCPirate/RipperStore button bar, shared by the Booth item page and
+  // BoothDex's item detail dialog. Buttons start disabled until autoCheck()
+  // confirms reachability/login state.
   function buildSearchBar(itemId) {
     const bar = document.createElement("div");
     bar.className = "bcs-bar";
+    bar.dataset.itemId = itemId;
 
-    // Paint a lookup result onto a button: green/red status dot plus the
-    // count badge next to the label — shown only for 2+ results (at 0 the
-    // red dot already says "none", and a lone "1" repeats the green dot;
-    // VRCPirate in practice never exceeds one match, so its badge stays off).
-    // Keep a descriptive title after load — empty title left the status
-    // dots opaque to anyone who wasn't already trained on the colors.
     function resultTitle(n) {
       if (!n) return "未找到匹配结果";
       if (n === 1) return "找到 1 条 · 点击打开";
@@ -795,6 +478,7 @@
 
     function makeSearchButton(className, label, title) {
       const button = document.createElement("button");
+      button.type = "button";
       button.className = `bcs-btn ${className}`;
       button.disabled = true;
       button.title = title;
@@ -830,7 +514,7 @@
             })),
           );
         }
-      } catch (e) {
+      } catch {
         vrcp.dot.className = "dot error";
         vrcpBtn.title = RETRY_MSG;
         showPanel(bar, [], RETRY_MSG);
@@ -877,9 +561,7 @@
       bar.appendChild(makeLink(text, url, "bcs-warn"));
     }
 
-    // Decides whether each button gets enabled, and colors its dot either way.
     bar.autoCheck = () => {
-      // VRCPirate: no login gate, search straight away.
       vrcpBtn.disabled = false;
       vrcpBtn.title = "查询中…";
       getVrcpMatches(itemId)
@@ -890,7 +572,6 @@
           vrcp.dot.className = "dot error";
           vrcpBtn.title = RETRY_MSG;
         });
-      // RipperStore: login state comes from the search response itself.
       getRipperResult(itemId)
         .then((posts) => {
           ripperBtn.disabled = false;
@@ -903,7 +584,6 @@
           if (auth) {
             addWarn("⚠ 未登录 RipperStore", "https://forum.ripper.store/login");
           } else {
-            // Network/parse error, not an auth failure — allow a manual retry.
             ripperBtn.disabled = false;
           }
         });
@@ -912,7 +592,8 @@
     return bar;
   }
 
-  // Shared expand/collapse button: label + right-side count + rotating chevron.
+  // ---------------------------------------------------------------- booth.pm
+
   function makeToggle() {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -922,41 +603,18 @@
     return btn;
   }
 
-  // Remove a trailing `.bcs-toggle` left by a previous render, before a
-  // container's overflow list is rebuilt.
-  function removeToggleAfter(el) {
-    const next = el.nextElementSibling;
-    if (next && next.classList.contains("bcs-toggle")) next.remove();
-  }
-
-  // makeToggle wired for an overflow list: sets the header count and returns
-  // the button plus a sync(open) that flips `.is-open` and swaps the
-  // collapse/expand wording. Callers own only their reveal mechanism (hide
-  // rows vs lazily append) and the click handler; `hiddenCount` is what
-  // `labels.expand(n)` reports.
-  function makeCountToggle(labels, hiddenCount) {
-    const toggle = makeToggle();
-    toggle.querySelector(".bcs-count").textContent = labels.count;
-    const label = toggle.querySelector(".bcs-label");
-    const sync = (open) => {
-      toggle.classList.toggle("is-open", open);
-      label.textContent = open ? labels.collapse : labels.expand(hiddenCount);
-    };
-    return { toggle, sync };
-  }
-
-  // Collapse `items` beyond the first `show` behind a shared expand toggle
-  // inserted after `anchor`. `labels.count` is the header count text;
-  // `labels.collapse` / `labels.expand(hiddenCount)` are the button wording.
-  // `onExpand` (optional) fires when expanding — the Booth variations list
-  // scrolls itself back into view. Every list-collapse site (variations,
-  // tags, wish strip) shares this instead of re-implementing the dance.
   function attachOverflowToggle(items, show, anchor, labels, onExpand) {
     const hidden = items.slice(show);
     const setHidden = (h) =>
       hidden.forEach((el) => el.classList.toggle("bcs-var-hidden", h));
     setHidden(true);
-    const { toggle, sync } = makeCountToggle(labels, hidden.length);
+    const toggle = makeToggle();
+    toggle.querySelector(".bcs-count").textContent = labels.count;
+    const label = toggle.querySelector(".bcs-label");
+    const sync = (open) => {
+      toggle.classList.toggle("is-open", open);
+      label.textContent = open ? labels.collapse : labels.expand(hidden.length);
+    };
     sync(false);
     toggle.addEventListener("click", () => {
       const wasHidden = hidden[0].classList.contains("bcs-var-hidden");
@@ -968,93 +626,51 @@
     return toggle;
   }
 
-  // Purchasable-variations collapse: show the first VAR_SHOW rows, hide the
-  // rest behind an overflow toggle. Shared by both entry points (the Booth
-  // item page and the vrcatalogue modal) so the count and wording stay in
-  // sync rather than being copied into each closure.
   const VAR_SHOW = 3;
-  const variationLabels = (count) => ({
-    count: `共 ${count} 件`,
-    collapse: "收起商品",
-    expand: (n) => `展开其余 ${n} 件`,
-  });
-
-  // Collapse `desc` behind an expand toggle. In "preview" mode (default)
-  // it's left alone when already shorter than the preview height, and
-  // collapses to a peeking 240px otherwise; the toggle is inserted after
-  // the content and collapsing scrolls it back into view.
-  //
-  // In "hidden" mode it always collapses — fully, to zero height —
-  // regardless of length, so every instance starts visually identical; the
-  // vrcatalogue modal uses this so per-item description length can't make
-  // one card taller than another. The toggle is pinned above the content
-  // (sticky, at the section divider) instead of drifting with content
-  // length/scroll position.
-  //
-  // Returns the toggle, or null when preview mode leaves it uncollapsed.
   const DESC_PREVIEW = 240;
-  // Slack over the preview height below which a description isn't worth
-  // collapsing (shared by collapseDesc and the Booth setupDescCollapse gate).
   const DESC_SLACK = 60;
-  function collapseDesc(desc, mode = "preview") {
-    const hidden = mode === "hidden";
-    if (!hidden && desc.scrollHeight <= DESC_PREVIEW + DESC_SLACK) return null;
-    const collapsedClass = hidden ? "bcs-desc-hidden" : "bcs-collapsed";
-    desc.classList.add("bcs-desc", collapsedClass);
+
+  function collapseDesc(desc) {
+    if (desc.scrollHeight <= DESC_PREVIEW + DESC_SLACK) return null;
+    desc.classList.add("bcs-desc", "bcs-collapsed");
     const toggle = makeToggle();
-    // Sticks to the top of the scrolling modal once expanded, so collapsing
-    // a long description back down never requires scrolling back up to find
-    // the button first.
-    if (hidden) toggle.classList.add("bcs-toggle-sticky");
     const label = toggle.querySelector(".bcs-label");
     const sync = () => {
-      const open = !desc.classList.contains(collapsedClass);
+      const open = !desc.classList.contains("bcs-collapsed");
       toggle.classList.toggle("is-open", open);
       label.textContent = open ? "收起商品说明" : "展开商品说明";
     };
     sync();
     toggle.addEventListener("click", () => {
-      const collapsing = !desc.classList.contains(collapsedClass);
-      desc.classList.toggle(collapsedClass);
+      const collapsing = !desc.classList.contains("bcs-collapsed");
+      desc.classList.toggle("bcs-collapsed");
       sync();
-      if (collapsing && !hidden) desc.scrollIntoView({ block: "nearest" });
+      if (collapsing) desc.scrollIntoView({ block: "nearest" });
     });
-    desc.insertAdjacentElement(hidden ? "beforebegin" : "afterend", toggle);
+    desc.insertAdjacentElement("afterend", toggle);
     return toggle;
   }
-
-  // ---------------------------------------------------------------- booth.pm
 
   function initBooth() {
     const idMatch = location.pathname.match(/\/items\/(\d+)/);
     if (!idMatch) return;
     const itemId = idMatch[1];
 
-    // og: meta is server-rendered, so it's already present at document-idle
-    // even while React still fills the body.
     const ogMeta = (p) =>
       document.querySelector(`meta[property="og:${p}"]`)?.content || "";
 
-    // Collapse the item description behind an expand button. On the generic
-    // booth.pm/items template, the description body is the .my-40 wrapper
-    // that holds the 概要/詳細 (.shop__text) sections — note .shop__text is
-    // also used in the shop-profile area, so anchor on the .my-40 that
-    // actually contains one. Custom shop subdomains (e.g. foo.booth.pm) use a
-    // different template with no .my-40 at all: the sections sit directly in
-    // a pair of responsive-duplicate .description blocks (one shown on
-    // mobile, one on desktop; .for_mobile.description is a third, unrelated
-    // short excerpt already collapsed natively) — fall back to those.
     function findDescCandidates() {
       const legacy = [...document.querySelectorAll(".my-40")].find((el) =>
         el.querySelector(".shop__text"),
       );
       if (legacy) return [legacy];
       return [...document.querySelectorAll(".description")].filter(
-        (el) => !el.classList.contains("for_mobile") && el.querySelector(".shop__text"),
+        (el) =>
+          !el.classList.contains("for_mobile") &&
+          el.querySelector(".shop__text"),
       );
     }
-    // Cached once found so the MutationObserver driving init() (below) isn't
-    // re-querying the whole document on every unrelated DOM mutation.
+
     let descCandidates = null;
     function setupDescCollapse() {
       if (!descCandidates || !descCandidates.length) {
@@ -1063,12 +679,7 @@
       if (!descCandidates.length) return false;
       return descCandidates.every((desc) => {
         if (desc.dataset.bcsCollapse) return true;
-        // The hidden half of a responsive-duplicate pair has scrollHeight 0
-        // and never "settles" — skip it without blocking on it.
         if (desc.offsetParent === null) return true;
-        // Height may read short while React is still filling the block;
-        // not settled yet (not a permanent skip) so the observer keeps
-        // watching until it does.
         if (desc.scrollHeight <= DESC_PREVIEW + DESC_SLACK) return false;
         desc.dataset.bcsCollapse = "1";
         collapseDesc(desc);
@@ -1076,9 +687,6 @@
       });
     }
 
-    // Collapse the purchasable-variations list (.variations, one
-    // .variation-item per row) down to the first few rows behind an expand
-    // button. Skips short lists where hiding a row or two isn't worth it.
     function setupVariationsCollapse() {
       const box = document.querySelector(".variations");
       if (!box) return false;
@@ -1093,13 +701,18 @@
         items,
         VAR_SHOW,
         box,
-        variationLabels(items.length),
+        {
+          count: `共 ${items.length} 件`,
+          collapse: "收起商品",
+          expand: (n) => `展开其余 ${n} 件`,
+        },
         () => box.scrollIntoView({ block: "nearest" }),
       );
       return true;
     }
 
-    const normalizeTitleText = (text) => (text || "").replace(/\s+/g, " ").trim();
+    const normalizeTitleText = (text) =>
+      (text || "").replace(/\s+/g, " ").trim();
 
     function findTitleEl() {
       const wanted = normalizeTitleText(ogMeta("title") || document.title);
@@ -1130,7 +743,6 @@
       if (!titleEl) return false;
       const bar = buildSearchBar(itemId);
       titleEl.insertAdjacentElement("afterend", bar);
-      // Runs once the page (and its own network activity) has settled.
       if (document.readyState === "complete") {
         bar.autoCheck();
       } else {
@@ -1140,9 +752,6 @@
     }
 
     function init() {
-      // Each returns true once handled; the bar, description and variations
-      // list can appear at different times, so keep the observer alive until
-      // all settle.
       const barDone = insertBar();
       const descDone = setupDescCollapse();
       const varDone = setupVariationsCollapse();
@@ -1150,10 +759,6 @@
     }
 
     if (!init()) {
-      // Coalesce mutation bursts into one init() per frame (like the
-      // vrcatalogue badge observer): React streams the item page in, and an
-      // unbatched init() re-runs findTitleEl's querySelectorAll plus the
-      // description's scrollHeight/offsetParent reflow on every mutation.
       let scheduled = false;
       const mo = new MutationObserver(() => {
         if (scheduled) return;
@@ -1168,1504 +773,83 @@
     }
   }
 
-  // ----------------------------------------------------------- vrcatalogue
+  // ---------------------------------------------------------------- boothdex
 
-  function initVrcatalogue() {
-    addStyle(`
-      .bcs-overlay {
-        position: fixed; inset: 0; z-index: 99999; background: var(--overlay-bg, rgba(0,0,0,.65));
-        display: flex; align-items: center; justify-content: center; padding: 24px;
-        font-family: -apple-system, "Helvetica Neue", Arial, "Hiragino Sans", "Noto Sans JP", sans-serif;
-      }
-      .bcs-modal {
-        background: var(--panel, #fff); color: var(--text, #222); border-radius: 14px; box-shadow: 0 12px 48px rgba(0,0,0,.4);
-        width: min(880px, 100%); max-height: min(720px, 92vh); overflow-y: auto;
-        padding: 20px; position: relative; box-sizing: border-box;
-        scrollbar-width: thin; scrollbar-color: transparent transparent;
-      }
-      /* Product modal: star + close share an absolute cluster at top-right so
-         they align as a pair without float-clearance or modal layout distortion.
-         History mounts close inside .bcs-hist-head (static) so it flex-aligns
-         with the title/filter row instead of guessing a top offset. */
-      .bcs-modal-actions {
-        position: absolute; top: 16px; right: 16px; z-index: 8;
-        display: flex; align-items: center; gap: 6px;
-      }
-      .bcs-modal-close {
-        position: absolute; top: 16px; right: 16px; z-index: 8;
-        box-sizing: border-box; flex: none;
-        width: 32px; height: 32px; min-width: 32px; min-height: 32px;
-        max-width: 32px; max-height: 32px; margin: 0; padding: 0;
-        display: flex; align-items: center; justify-content: center;
-        border: 1px solid var(--border, #e4e4e7); border-radius: 50%;
-        background: var(--panel, #fff); color: var(--muted, #666);
-        font-size: 20px; font-weight: 500; line-height: 0; cursor: pointer;
-        box-shadow: 0 1px 4px rgba(0,0,0,.08); overflow: hidden;
-        appearance: none; -webkit-appearance: none;
-        transition: background .12s, color .12s, border-color .12s;
-      }
-      .bcs-modal-actions .bcs-modal-close,
-      .bcs-hist-head .bcs-modal-close {
-        position: static; margin: 0;
-      }
-      .bcs-modal-close:hover {
-        background: var(--item-hover, #f5f5f5); color: var(--text, #222);
-        border-color: var(--border, #d4d4d8);
-      }
-      /* Gutter (scrollbar-width: thin / webkit width: 8px) stays reserved at
-         all times so hovering never resizes the modal — only the thumb color
-         toggles, keeping an idle view clean while scroll stays discoverable. */
-      .bcs-modal:hover { scrollbar-color: var(--scrollbar-thumb, #ccc) transparent; }
-      .bcs-modal::-webkit-scrollbar { width: 8px; background: transparent; }
-      .bcs-modal::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
-      .bcs-modal:hover::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, #ccc); }
-      .bcs-modal:hover::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover, #bbb); }
-      /* margin-bottom keeps a gap above the (sticky, margin-top:0) description
-         toggle even when the info column (variations + tags) grows taller than
-         the image — otherwise 去 Booth 购买 sits flush at the column bottom and
-         the toggle butts against it. It rides on modal-top rather than the
-         toggle so it scrolls away when the toggle sticks, keeping it flush. */
-      .bcs-modal-top { display: flex; gap: 20px; align-items: flex-start; margin-bottom: 16px; }
-      .bcs-media { flex: 0 0 46%; min-width: 0; }
-      .bcs-img-stage { position: relative; }
-      .bcs-main-img {
-        width: 100%; aspect-ratio: 1; object-fit: contain; background: var(--skel, #f4f4f5);
-        border-radius: 10px; display: block; cursor: zoom-in;
-      }
-      /* .bcs-nav / .bcs-zoom-overlay mirror vrcatalogue.com's own
-         .lightbox-nav / .lightbox styling so the image controls feel native
-         to the site rather than bespoke to this script. */
-      .bcs-nav, .bcs-znav {
-        position: absolute; top: 50%; z-index: 2; border-radius: 3px;
-        border: 1px solid rgba(255,255,255,.18); color: #fff;
-        display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0;
-        transition: background .12s ease, border-color .12s ease, transform .12s ease;
-      }
-      .bcs-nav { transform: translateY(-50%); width: 2.25rem; height: 2.25rem; background: rgba(0,0,0,.55); }
-      .bcs-nav:hover { background: rgba(0,0,0,.75); border-color: rgba(255,255,255,.35); }
-      .bcs-nav svg { width: 18px; height: 18px; }
-      .bcs-nav--left { left: 8px; }
-      .bcs-nav--right { right: 8px; }
-      .bcs-zoom-overlay {
-        position: fixed; inset: 0; z-index: 100000; background: #000000eb;
-        display: flex; align-items: center; justify-content: center; padding: 24px; cursor: zoom-out;
-      }
-      /* Fixed-size stage (copies vrcatalogue's .lightbox-main) so nav buttons
-         stay put regardless of image aspect — they don't chase the image box.
-         Image is object-fit:contain inside; the 9rem width gutter leaves room
-         for the outside nav. */
-      .bcs-zoom-stage { position: relative; width: min(100vw - 9rem, 1200px); height: min(80vh, 1000px); }
-      .bcs-zoom-img { width: 100%; height: 100%; object-fit: contain; display: block; }
-      /* .bcs-znav copies vrcatalogue's .lightbox-nav 1:1 (3.5rem square, sits
-         .75rem outside the image edge) so the zoom controls match the site.
-         Box/appearance base is shared with .bcs-nav above. */
-      .bcs-znav { margin-top: -1.75rem; width: 3.5rem; height: 3.5rem; background: #0000008c; }
-      .bcs-znav:hover { background: #ffffff26; border-color: #ffffff59; transform: scale(1.1); }
-      .bcs-znav:active { transform: scale(1.02); }
-      .bcs-znav svg { width: 24px; height: 24px; }
-      .bcs-znav--left { right: calc(100% + .75rem); }
-      .bcs-znav--right { left: calc(100% + .75rem); }
-      @media (max-width: 640px) {
-        .bcs-zoom-overlay { padding: 12px; }
-        .bcs-znav { width: 2.5rem; height: 2.5rem; margin-top: -1.25rem; }
-        .bcs-znav svg { width: 20px; height: 20px; }
-        .bcs-znav--left { right: calc(100% + .5rem); }
-        .bcs-znav--right { left: calc(100% + .5rem); }
-      }
-      .bcs-img-count {
-        position: absolute; right: 8px; bottom: 8px; z-index: 2;
-        background: rgba(0,0,0,.55); color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 10px;
-      }
-      .bcs-thumbs { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; padding-bottom: 4px; scroll-behavior: smooth; }
-      .bcs-thumb {
-        flex: none; width: 52px; height: 52px; padding: 0; border-radius: 6px; overflow: hidden;
-        border: 2px solid transparent; cursor: pointer; background: var(--skel, #f4f4f5);
-      }
-      .bcs-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-      .bcs-thumb.on { border-color: var(--accent, #fc4d50); }
-      .bcs-variations { display: flex; flex-direction: column; }
-      .bcs-var-item {
-        display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px;
-        padding: 6px 0; border-bottom: 1px solid var(--border, #f0f0f0);
-      }
-      .bcs-var-item:last-child { border-bottom: none; }
-      .bcs-var-name { color: var(--text, #222); word-break: break-word; }
-      .bcs-var-price { color: var(--accent, #fc4d50); font-weight: 700; flex: none; }
-      .bcs-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
-      .bcs-title-row { display: flex; align-items: flex-start; gap: 8px; padding-right: 76px; }
-      .bcs-title-row .bcs-title { flex: 1; min-width: 0; }
-      /* Match .bcs-modal-close chrome so ★ and × read as one control group. */
-      .bcs-star {
-        box-sizing: border-box; flex: none;
-        width: 32px; height: 32px; min-width: 32px; min-height: 32px;
-        max-width: 32px; max-height: 32px; margin: 0; padding: 0; cursor: pointer;
-        display: flex; align-items: center; justify-content: center;
-        border: 1px solid var(--border, #e4e4e7); border-radius: 50%;
-        background: var(--panel, #fff); color: var(--muted, #666);
-        box-shadow: 0 1px 4px rgba(0,0,0,.08); overflow: hidden;
-        appearance: none; -webkit-appearance: none;
-        transition: background .12s, color .12s, border-color .12s, transform .12s;
-      }
-      .bcs-star:hover {
-        background: var(--item-hover, #f5f5f5); color: var(--text, #222);
-        border-color: var(--border, #d4d4d8); transform: scale(1.06);
-      }
-      .bcs-star.on { color: #f5a623; border-color: #f5a623; }
-      .bcs-star:disabled { opacity: .5; cursor: wait; }
-      .bcs-star svg { width: 16px; height: 16px; display: block; }
-      .bcs-title {
-        font-size: 17px; font-weight: 700; line-height: 1.45; color: var(--text, #222);
-        text-decoration: none; word-break: break-word;
-      }
-      .bcs-title:hover { color: var(--accent, #fc4d50); text-decoration: underline; }
-      .bcs-meta { font-size: 13px; color: var(--muted, #888); display: flex; gap: 10px; flex-wrap: wrap; }
-      .bcs-meta .bcs-price { color: var(--accent, #fc4d50); font-weight: 700; }
-      .bcs-meta a { color: inherit; text-decoration: none; }
-      .bcs-meta a:hover { color: var(--accent, #fc4d50); text-decoration: underline; }
-      .bcs-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-      .bcs-tag {
-        font-size: 11px; padding: 3px 10px; border-radius: 12px;
-        background: var(--item-hover, #f5f5f5); color: var(--muted, #888);
-        text-decoration: none; border: 1px solid transparent;
-      }
-      .bcs-tag:hover { color: var(--accent, #fc4d50); border-color: var(--accent, #fc4d50); }
-      .bcs-buy {
-        display: block; text-align: center; padding: 11px 16px; border-radius: 24px;
-        background: var(--accent, #fc4d50); color: #fff; font-size: 14px; font-weight: 700;
-        text-decoration: none; transition: background .15s;
-      }
-      .bcs-buy:hover { background: var(--accent-fill, #e63e42); }
-      .bcs-modal-desc {
-        margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border, #eee);
-        font-size: 13px; line-height: 1.7; color: var(--text, #222); white-space: pre-wrap; word-break: break-word;
-      }
-      .bcs-modal-desc.bcs-dim { color: var(--muted, #888); }
-      .bcs-hist-fab {
-        position: fixed; right: 18px; bottom: 18px; z-index: 9998;
-        width: 44px; height: 44px; border-radius: 50%; padding: 0;
-        display: flex; align-items: center; justify-content: center; cursor: pointer;
-        border: 1px solid var(--border, #ddd); background: var(--panel, #fff); color: var(--text, #222);
-        box-shadow: 0 2px 10px rgba(0,0,0,.18); transition: background .15s, transform .12s;
-      }
-      .bcs-hist-fab:hover { background: var(--item-hover, #f5f5f5); transform: scale(1.06); }
-      .bcs-hist-fab svg { width: 20px; height: 20px; }
-      .bcs-hist-head {
-        display: flex; align-items: center; gap: 12px;
-        min-height: 32px; margin-bottom: 14px; font-size: 15px; font-weight: 700; color: var(--text, #222);
-      }
-      .bcs-hist-head > span { flex: none; }
-      .bcs-filter-wrap { position: relative; flex: 1; min-width: 0; }
-      .bcs-hist-filter {
-        width: 100%; box-sizing: border-box; height: 32px; padding: 0 10px;
-        font-size: 12px; font-family: inherit; line-height: 1; color: var(--text, #222);
-        background: var(--item-hover, #f5f5f5); border: 1px solid var(--border, #ddd);
-        border-radius: 6px; outline: none;
-      }
-      .bcs-hist-filter:focus { border-color: var(--accent, #fc4d50); }
-      .bcs-filter-drop {
-        position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 10;
-        background: var(--panel, #fff); border: 1px solid var(--border, #ddd);
-        border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.18);
-        max-height: 240px; overflow-y: auto; padding: 4px;
-      }
-      .bcs-filter-drop[hidden] { display: none; }
-      .bcs-filter-row {
-        display: flex; align-items: center; gap: 6px; padding: 5px 8px;
-        border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text, #222);
-      }
-      .bcs-filter-row:hover { background: var(--item-hover, #f5f5f5); }
-      .bcs-filter-row .q {
-        flex: 1; min-width: 0; overflow: hidden;
-        text-overflow: ellipsis; white-space: nowrap;
-      }
-      .bcs-filter-del {
-        border: none; background: none; cursor: pointer; padding: 0 2px;
-        font-size: 13px; line-height: 1; font-family: inherit; color: var(--muted, #999);
-      }
-      .bcs-filter-del:hover { color: var(--accent, #fc4d50); }
-      .bcs-hist-clear {
-        flex: none; margin-left: 10px; padding: 4px 10px; white-space: nowrap;
-        font-size: 12px; font-weight: 400; font-family: inherit; cursor: pointer;
-        color: var(--muted, #888); background: var(--item-hover, #f5f5f5);
-        border: 1px solid var(--border, #ddd); border-radius: 6px;
-        transition: color .15s, border-color .15s, background .15s;
-      }
-      .bcs-hist-clear:hover { color: var(--accent, #fc4d50); border-color: var(--accent, #fc4d50); }
-      .bcs-hist-clear.armed { color: #fff; background: var(--accent, #fc4d50); border-color: var(--accent, #fc4d50); }
-      .bcs-hist-clear[disabled] { opacity: .6; cursor: default; }
-      .bcs-hist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; align-items: start; }
-      .bcs-hist-item { border: none; background: none; padding: 0; cursor: pointer; text-align: left; font-family: inherit; }
-      .bcs-hist-thumb { position: relative; }
-      .bcs-hist-item img {
-        width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
-        border-radius: 8px; background: var(--skel, #f4f4f5);
-      }
-      .bcs-hist-item .ht {
-        margin-top: 6px; font-size: 12px; line-height: 1.4; color: var(--text, #222);
-        display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-        word-break: break-word; min-height: 2.8em;
-      }
-      .bcs-hist-item:hover .ht { color: var(--accent, #fc4d50); }
-      .bcs-hist-item .hm {
-        margin-top: 2px; font-size: 11px; color: var(--muted, #888);
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      }
-      .bcs-hist-empty { padding: 32px 0; text-align: center; font-size: 13px; color: var(--muted, #888); }
-      .bcs-hist-sub {
-        margin: 14px 0 8px; font-size: 12px; font-weight: 700;
-        color: var(--muted, #888);
-      }
-      .bcs-hist-sub-row { display: flex; align-items: center; justify-content: space-between; }
-      /* Wish-toggle star shared by history thumbs and product cards:
-         hover-revealed when off, constant gold when on. Touch devices have
-         no hover — keep a soft always-on affordance there. */
-      .bcs-tile-star {
-        position: absolute; top: 6px; right: 6px; width: 22px; height: 22px;
-        display: flex; align-items: center; justify-content: center;
-        border: none; padding: 0; z-index: 5;
-        border-radius: 50%; background: var(--panel, #fff); color: var(--muted, #999);
-        box-shadow: 0 1px 4px rgba(0,0,0,.2); cursor: pointer;
-        opacity: 0; transition: opacity .12s, color .15s, transform .12s;
-      }
-      .bcs-tile-star[hidden] { display: none; }
-      .bcs-hist-item:hover .bcs-tile-star,
-      .cardImgWrap:hover .bcs-tile-star { opacity: 1; }
-      .bcs-tile-star.on { opacity: 1; color: #f5a623; }
-      @media (hover: none) {
-        .bcs-tile-star { opacity: .88; }
-      }
-      .bcs-tile-star svg { width: 14px; height: 14px; }
-      /* Visible fail flash — title alone is easy to miss on tiles. */
-      .bcs-tile-star.bcs-wish-fail,
-      .bcs-star.bcs-wish-fail {
-        color: #e2394f !important; opacity: 1;
-        animation: bcs-wish-shake .35s ease;
-      }
-      @keyframes bcs-wish-shake {
-        0%, 100% { transform: translateX(0); }
-        25% { transform: translateX(-3px); }
-        75% { transform: translateX(3px); }
-      }
-      @media (max-width: 640px) {
-        .bcs-modal-top { flex-direction: column; }
-        .bcs-media { flex: none; width: 100%; }
-        .bcs-title-row { padding-right: 0; }
-      }
-      .cardImgWrap { position: relative; }
-      /* Seen = light grey veil over the image; sits under the chip and star.
-         Kept soft so long grids stay scannable (chip still labels 已看). */
-      .cardImgWrap.bcs-seen::after {
-        content: ""; position: absolute; inset: 0; z-index: 4;
-        background: rgba(90, 90, 90, .32); pointer-events: none;
-        border-radius: inherit;
-        transition: background .15s ease;
-      }
-      .cardImgWrap.bcs-seen:hover::after {
-        background: rgba(90, 90, 90, .16);
-      }
-      .bcs-badges {
-        position: absolute; top: 6px; left: 6px; z-index: 5;
-        display: flex; gap: 4px; pointer-events: none;
-      }
-      .bcs-badge {
-        padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700;
-        background: rgba(0,0,0,.72); color: #fff; backdrop-filter: blur(2px);
-        box-shadow: 0 1px 4px rgba(0,0,0,.35); letter-spacing: .5px;
-      }
-    `);
-
-    const TAG_SHOW = 8;
-    // Filled-star glyph shared by the modal star and the tile stars.
-    const STAR_SVG =
-      '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
-    const WISH_FAIL_MSG = "收藏失败（需登录 Booth？）";
-    // title= alone is easy to miss on a 22px tile; flash red + shake briefly.
-    function flashWishFail(el) {
-      if (!el) return;
-      el.title = WISH_FAIL_MSG;
-      el.classList.add("bcs-wish-fail");
-      clearTimeout(el._bcsWishFailTimer);
-      el._bcsWishFailTimer = setTimeout(() => {
-        el.classList.remove("bcs-wish-fail");
-      }, 1600);
-    }
-
-    // Resolve a product card's Booth item id from its .cardImgWrap. Both the
-    // click interceptor and the badge pass depend on this (brittle) SPA
-    // DOM shape, so it lives in one place. Returns {id, card, link} or null.
-    function cardItemId(wrap) {
-      const card = wrap.closest("li") || wrap.parentElement;
-      const link =
-        card && card.querySelector('a[href*="booth.pm"][href*="/items/"]');
+  // BoothDex renders item details inside a Radix Dialog ([role="dialog"]) that
+  // includes a Booth buy link (`https://booth.pm/ja/items/<id>`) and a visible
+  // <h2> title alongside a screen-reader-only DialogTitle (<h2 data-slot="dialog-title">).
+  // Other dialogs (sign-in, saved searches, Ctrl+K palette) have no Booth item
+  // link and are ignored. Switching items via "more from shop" remounts the
+  // dialog body in place, which dataset.itemId detects and replaces.
+  function initBoothDex() {
+    function injectIntoDialog(dialog) {
+      const link = dialog.querySelector('a[href*="booth.pm/"][href*="/items/"]');
       const m = link && link.href.match(/\/items\/(\d+)/);
-      return m ? { id: m[1], card, link } : null;
-    }
-
-    function cardEntryFromCard(ctx, id) {
-      if (!ctx || !ctx.card) return null;
-      id = String(id || ctx.id);
-      const wrap = ctx.card.querySelector(".cardImgWrap");
-      const img = wrap && wrap.querySelector("img");
-      const title = ctx.card.querySelector(".cardTitle") || ctx.link;
-      return {
-        id,
-        title: title ? title.textContent.trim() : "",
-        img: img ? boothImgVariant(img.currentSrc || img.src) : "",
-        price: "",
-        shop: "",
-      };
-    }
-
-    const boothCache = new Map();
-    const boothStore = persistentStore("booth", 24 * HOUR, 60);
-    // Keep only the fields the modal renders — the raw payload runs tens of
-    // KB per item and would bloat the persistent cache blob.
-    function compactBoothItem(json) {
-      return {
-        id: json.id,
-        name: json.name,
-        url: json.url,
-        price: json.price,
-        wish_lists_count: json.wish_lists_count,
-        shop: json.shop && {
-          name: json.shop.name,
-          url: json.shop.url,
-        },
-        category: json.category && {
-          name: json.category.name,
-          url: json.category.url,
-          parent: json.category.parent && {
-            name: json.category.parent.name,
-          },
-        },
-        tags: (json.tags || []).map((t) => ({
-          name: t.name,
-          url: t.url,
-        })),
-        images: (json.images || []).map((im) => ({
-          original: im.original,
-          resized: im.resized,
-        })),
-        variations: (json.variations || []).map((v) => ({
-          name: v.name,
-          price: v.price,
-        })),
-        description: json.description,
-        factory_description: json.factory_description,
-      };
-    }
-
-    function getBoothItem(id) {
-      return memoized(
-        boothCache,
-        id,
-        () =>
-          fetchJson(`https://booth.pm/en/items/${id}.json`).then(
-            ({ status, json }) => {
-              if (status !== 200 || !json || !json.id) {
-                throw new Error(`booth json ${status}`);
-              }
-              return compactBoothItem(json);
-            },
-          ),
-        boothStore,
+      if (!m) return;
+      const itemId = m[1];
+      const existing = dialog.querySelector(".bcs-bar");
+      if (existing) {
+        if (existing.dataset.itemId === itemId) return;
+        existing.remove();
+      }
+      const titleEl = dialog.querySelector(
+        'h2:not([data-slot="dialog-title"]):not(.sr-only)',
       );
-    }
-
-    // Booth logs a server-side view when items/<id>.json is fetched with the
-    // user's cookies. getBoothItem's fetch does that on a cache miss, but a
-    // cache hit (in-memory boothCache or the 24h boothStore) skips the network,
-    // so the open is recorded locally by markSeen yet never reaches Booth's own
-    // 已看 list. When cached, fire a cookied fire-and-forget GET so Booth's list
-    // stays in sync — cheap, since modal opens are user clicks, not scans. Must
-    // run before getBoothItem, which populates boothCache for every id.
-    function pingBoothViewIfCached(id) {
-      if (boothCache.has(id) || boothStore.get(id) !== undefined) {
-        gmGet(`https://booth.pm/en/items/${id}.json`).catch(() => {});
-      }
-    }
-
-    // Render the item's purchasable variations (name + price) — booth.pm
-    // items with >1 price tier (e.g. base + support) don't otherwise surface
-    // that in the modal, which only shows the single `item.price` summary.
-    // `overallPrice` is that summary string (e.g. "800 JPY~"), scraped only
-    // for its currency suffix since each variation's own price is a bare
-    // number.
-    function formatVariationPrice(value, currency) {
-      if (typeof value !== "number") return String(value);
-      const suffix = currency ? ` ${currency}` : "";
-      return `${value.toLocaleString()}${suffix}`;
-    }
-
-    function renderVariations(container, variations, overallPrice) {
-      container.replaceChildren();
-      removeToggleAfter(container);
-      if (!variations || variations.length < 2) return;
-      const currency = /([A-Z]{3})\s*~?$/.exec(overallPrice || "")?.[1];
-      for (const v of variations) {
-        const row = document.createElement("div");
-        row.className = "bcs-var-item";
-        const name = document.createElement("span");
-        name.className = "bcs-var-name";
-        name.textContent = v.name;
-        const price = document.createElement("span");
-        price.className = "bcs-var-price";
-        price.textContent = formatVariationPrice(v.price, currency);
-        row.append(name, price);
-        container.appendChild(row);
-      }
-
-      if (variations.length > VAR_SHOW + 1) {
-        attachOverflowToggle(
-          [...container.children],
-          VAR_SHOW,
-          container,
-          variationLabels(variations.length),
-        );
-      }
-    }
-
-    // Shared by the product modal and the zoom overlay so stacking one on top
-    // of the other behaves like a real stack: Escape/backdrop-click close, and
-    // ArrowLeft/Right paging, are routed to the topmost overlay only. Each
-    // overlay registers its own `onArrow` (image paging) via openOverlay, so
-    // there's a single key dispatcher rather than per-overlay listeners.
-    const overlayStack = [];
-    document.addEventListener(
-      "keydown",
-      (e) => {
-        if (!overlayStack.length) return;
-        const top = overlayStack[overlayStack.length - 1];
-        if (e.key === "Escape") {
-          e.stopPropagation();
-          // An open filter dropdown eats the first Escape (the input's own
-          // keydown never sees it — this capture listener runs first).
-          const drop = e.target.closest?.(".bcs-filter-wrap")
-            ?.querySelector(".bcs-filter-drop");
-          if (drop && !drop.hidden) {
-            drop.hidden = true;
-            return;
-          }
-          top.close();
-        } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-          if (!top.onArrow) return;
-          e.stopPropagation();
-          top.onArrow(e.key === "ArrowLeft" ? -1 : 1);
-        }
-      },
-      true,
-    );
-    // Body scroll is locked while any overlay is up: saved when the stack
-    // goes 0→1, restored when it empties — callers never touch overflow.
-    let prevBodyOverflow = "";
-    function openOverlay(el, { onClose, closeOnAnyClick, onArrow } = {}) {
-      if (!overlayStack.length) {
-        prevBodyOverflow = document.body.style.overflow;
-        document.body.style.overflow = "hidden";
-      }
-      const entry = {
-        onArrow,
-        close: () => {
-          el.remove();
-          // The body-fixed search panel would outlive its modal (× click
-          // stops propagation before the panel's outside-click handler).
-          closePanels();
-          const i = overlayStack.indexOf(entry);
-          if (i !== -1) overlayStack.splice(i, 1);
-          if (!overlayStack.length)
-            document.body.style.overflow = prevBodyOverflow;
-          onClose?.();
-        },
-      };
-      overlayStack.push(entry);
-      el.addEventListener("click", (e) => {
-        if (closeOnAnyClick || e.target === el) entry.close();
-      });
-      document.body.appendChild(el);
-      return entry;
-    }
-
-    // Explicit × on product / history modals (zoom keeps backdrop-only close).
-    // Product modals host a .bcs-modal-actions cluster (star + close); history
-    // mounts into .bcs-hist-head so flex alignment matches title/filter.
-    function attachModalClose(modal, close) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "bcs-modal-close";
-      btn.setAttribute("aria-label", "关闭");
-      btn.textContent = "×";
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        close();
-      });
-      const actions = modal.querySelector(".bcs-modal-actions");
-      const histHead = modal.querySelector(".bcs-hist-head");
-      if (actions) actions.appendChild(btn);
-      else if (histHead) histHead.appendChild(btn);
-      else modal.prepend(btn);
-      return btn;
-    }
-
-    // Prev/next arrow buttons, shared by the modal (.bcs-nav, inside the image)
-    // and the zoom overlay (.bcs-znav, outside it). Builds a left(-1)/right(+1)
-    // pair into `parent`, each wired to step(dir); clicks stopPropagation so a
-    // backdrop close-on-click never fires. `cls` is the base class; each button
-    // also gets `${cls}--left` / `${cls}--right`. Returns { left, right }.
-    const NAV_ARROW = { left: "15 18 9 12 15 6", right: "9 18 15 12 9 6" };
-    function buildNavPair(parent, cls, step) {
-      const mk = (dir, side, label) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = `${cls} ${cls}--${side}`;
-        btn.setAttribute("aria-label", label);
-        btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="${NAV_ARROW[side]}"></polyline></svg>`;
-        btn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          step(dir);
-        });
-        parent.appendChild(btn);
-        return btn;
-      };
-      return {
-        left: mk(-1, "left", "Previous image"),
-        right: mk(1, "right", "Next image"),
-      };
-    }
-
-    // At most one product modal. A second open (double-click, another card,
-    // or a history tile) replaces the first instead of stacking; zoom still
-    // stacks on top, and the history panel stays underneath when present.
-    let activeProductEntry = null;
-    function closeActiveProductModal() {
-      if (!activeProductEntry) return;
-      // Close topmost first so a zoom layered on the product doesn't orphan.
-      while (overlayStack.includes(activeProductEntry)) {
-        overlayStack[overlayStack.length - 1].close();
-      }
-      activeProductEntry = null;
-    }
-
-    function openModal(seed, { onClose } = {}) {
-      closeActiveProductModal();
-      const overlay = document.createElement("div");
-      overlay.className = "bcs-overlay";
-      // Flipped false in onClose so late getBoothItem / wish resolves from a
-      // quickly-dismissed modal don't rewrite markSeen or touch detached DOM
-      // after the user has already moved on (isConnected covers most cases;
-      // alive also covers stacked overlays that stay connected underneath).
-      let alive = true;
-      const boothUrl = `https://booth.pm/items/${seed.id}`;
-      // Canonical full-size seed image, computed once and reused — the modal
-      // seed, the star entry, and markSeen all want the same bare URL.
-      const seedFull = boothImgVariant(seed.img);
-      // Booth records the view server-side (the item JSON fetch below carries
-      // cookies); mark it locally too so the veil updates without a refetch.
-      markSeen(seed.id, {
-        title: seed.title,
-        img: seedFull,
-      });
-      queueAllBadges();
-      overlay.innerHTML = `
-        <div class="bcs-modal" role="dialog" aria-modal="true" aria-label="商品详情">
-          <div class="bcs-modal-actions">
-            <button class="bcs-star" type="button" hidden aria-label="收藏">${STAR_SVG}</button>
-          </div>
-          <div class="bcs-modal-top">
-            <div class="bcs-media">
-              <div class="bcs-img-stage">
-                <img class="bcs-main-img" alt="">
-                <span class="bcs-img-count" hidden></span>
-              </div>
-              <div class="bcs-thumbs" hidden></div>
-            </div>
-            <div class="bcs-info">
-              <div class="bcs-title-row">
-                <a class="bcs-title" target="_blank" rel="noopener noreferrer"></a>
-              </div>
-              <div class="bcs-meta"></div>
-              <div class="bcs-variations"></div>
-              <div class="bcs-tags"></div>
-              <a class="bcs-buy" target="_blank" rel="noopener noreferrer">去 Booth 购买</a>
-            </div>
-          </div>
-          <div class="bcs-modal-desc bcs-dim">商品说明加载中…</div>
-        </div>`;
-
-      const mainImg = overlay.querySelector(".bcs-main-img");
-      const stageEl = overlay.querySelector(".bcs-img-stage");
-      const thumbs = overlay.querySelector(".bcs-thumbs");
-      const countEl = overlay.querySelector(".bcs-img-count");
-      const titleEl = overlay.querySelector(".bcs-title");
-      const metaEl = overlay.querySelector(".bcs-meta");
-      const varEl = overlay.querySelector(".bcs-variations");
-      const tagsEl = overlay.querySelector(".bcs-tags");
-      const descEl = overlay.querySelector(".bcs-modal-desc");
-
-      // Seed with what the card already shows so the modal never opens blank.
-      if (seed.img) {
-        mainImg.dataset.fullSrc = seedFull;
-        mainImg.src = boothImgVariant(seedFull, MODAL_IMG_SPEC);
-      }
-      titleEl.textContent = seed.title || `Booth #${seed.id}`;
-      titleEl.href = boothUrl;
-      overlay.querySelector(".bcs-buy").href = boothUrl;
-
-      // Star = Booth wish list membership. Hidden until the id set resolves
-      // (stays hidden if that fetch fails); optimistic toggle, reverted with
-      // a hint on failure. Booth item pages get no script star — the native
-      // button is already there.
-      const starBtn = overlay.querySelector(".bcs-star");
-      const paintStar = (on) => {
-        starBtn.classList.toggle("on", on);
-        starBtn.title = on ? "取消收藏（Booth スキ!）" : "收藏（Booth スキ!）";
-      };
-      getWishedIds()
-        .then((set) => {
-          queueAllBadges(); // card ★s too, e.g. after an earlier failed walk
-          if (!alive) return;
-          starBtn.hidden = false;
-          paintStar(set.has(String(seed.id)));
-        })
-        .catch(() => {});
-      starBtn.addEventListener("click", () => {
-        const on = !starBtn.classList.contains("on");
-        paintStar(on);
-        starBtn.disabled = true;
-        setWished(seed.id, on, {
-          title: titleEl.textContent.trim(),
-          img: mainImg.dataset.fullSrc || seedFull,
-        })
-          .then(() => queueAllBadges())
-          .catch(() => {
-            paintStar(!on);
-            flashWishFail(starBtn);
-          })
-          .finally(() => {
-            starBtn.disabled = false;
-          });
-      });
-
-      // Multi-image nav: filled in once the Booth .json resolves (see below).
-      // Dedicated left/right buttons page through images (only shown once
-      // there's more than one); thumbnails below jump straight to a given
-      // image; clicking the image itself opens a fullscreen zoom.
-      let images = [];
-      let thumbEls = [];
-      let idx = 0;
-      const showImage = (i) => {
-        if (!images.length) return;
-        thumbEls[idx]?.classList.remove("on");
-        idx = (i + images.length) % images.length;
-        mainImg.dataset.fullSrc = images[idx].original;
-        mainImg.src = boothImgVariant(images[idx].original, MODAL_IMG_SPEC);
-        countEl.textContent = `${idx + 1} / ${images.length}`;
-        const activeThumb = thumbEls[idx];
-        activeThumb?.classList.add("on");
-        activeThumb?.scrollIntoView({ block: "nearest", inline: "nearest" });
-      };
-      const stepImage = (dir) => showImage(idx + dir);
-      const nav = buildNavPair(stageEl, "bcs-nav", stepImage);
-      nav.left.hidden = true;
-      nav.right.hidden = true;
-      mainImg.addEventListener("click", openZoom);
-      function openZoom() {
-        const src = images.length
-          ? images[idx].original
-          : mainImg.dataset.fullSrc || boothImgVariant(mainImg.src);
-        if (!src) return;
-        const zoomOverlay = document.createElement("div");
-        zoomOverlay.className = "bcs-zoom-overlay";
-        // Fixed-size stage (see .bcs-zoom-stage) holds the contained image;
-        // nav buttons pin to the stage edges so they stay put across images.
-        const stage = document.createElement("div");
-        stage.className = "bcs-zoom-stage";
-        const img = document.createElement("img");
-        img.className = "bcs-zoom-img";
-        img.src = src;
-        stage.appendChild(img);
-        zoomOverlay.appendChild(stage);
-
-        // The zoom pages through the same image list but keeps its OWN index so
-        // it only repaints the visible zoom <img> — the occluded modal isn't
-        // touched per step (no offscreen decode / thumb-strip reflow). The modal
-        // is synced once on close so it lands on the last-viewed image.
-        let zi = idx;
-        let onArrow;
-        if (images.length > 1) {
-          const step = (dir) => {
-            zi = (zi + dir + images.length) % images.length;
-            img.src = images[zi].original;
-          };
-          buildNavPair(stage, "bcs-znav", step);
-          onArrow = step;
-        }
-
-        openOverlay(zoomOverlay, {
-          closeOnAnyClick: true,
-          onArrow,
-          onClose: () => {
-            if (zi !== idx) showImage(zi);
-          },
-        });
-      }
-
-      const bar = buildSearchBar(seed.id);
-      metaEl.insertAdjacentElement("afterend", bar);
+      if (!titleEl) return;
+      closePanels();
+      const bar = buildSearchBar(itemId);
+      titleEl.insertAdjacentElement("afterend", bar);
       bar.autoCheck();
-
-      const overlayEntry = openOverlay(overlay, {
-        onArrow: stepImage,
-        onClose: () => {
-          alive = false;
-          if (activeProductEntry === overlayEntry) activeProductEntry = null;
-          onClose?.();
-        },
-      });
-      activeProductEntry = overlayEntry;
-      attachModalClose(overlay.querySelector(".bcs-modal"), () =>
-        overlayEntry.close(),
-      );
-
-      // Register the view with Booth even when the item JSON is served from
-      // cache (see pingBoothViewIfCached), so it lands in Booth's 已看 list and
-      // not only the local archive.
-      pingBoothViewIfCached(seed.id);
-      getBoothItem(seed.id)
-        .then((item) => {
-          if (!alive || !overlay.isConnected) return;
-          titleEl.textContent = item.name;
-          titleEl.href = item.url || boothUrl;
-          overlay.querySelector(".bcs-buy").href = item.url || boothUrl;
-          markSeen(seed.id, {
-            title: item.name,
-            img: item.images?.[0]?.original || seed.img,
-            price: item.price,
-            shop: item.shop?.name,
-          });
-
-          metaEl.replaceChildren();
-          const addMeta = (text, cls) => {
-            const s = document.createElement("span");
-            if (cls) s.className = cls;
-            s.textContent = text;
-            metaEl.appendChild(s);
-          };
-          if (item.shop && item.shop.name) {
-            if (item.shop.url) {
-              metaEl.appendChild(makeLink(item.shop.name, item.shop.url));
-            } else {
-              addMeta(item.shop.name);
-            }
-          }
-          if (item.price) addMeta(item.price, "bcs-price");
-          if (typeof item.wish_lists_count === "number") {
-            addMeta(`♥ ${item.wish_lists_count}`);
-          }
-          if (item.category && item.category.name) {
-            let text = item.category.name;
-            if (item.category.parent) {
-              text = `${item.category.parent.name} › ${item.category.name}`;
-            }
-            metaEl.appendChild(makeLink(text, item.category.url || boothUrl));
-          }
-
-          tagsEl.replaceChildren();
-          removeToggleAfter(tagsEl);
-          const tags = item.tags || [];
-          for (const tg of tags) {
-            tagsEl.appendChild(makeLink(tg.name, tg.url, "bcs-tag"));
-          }
-          if (tags.length > TAG_SHOW + 2) {
-            attachOverflowToggle([...tagsEl.children], TAG_SHOW, tagsEl, {
-              count: `共 ${tags.length} 个`,
-              collapse: "收起标签",
-              expand: (n) => `展开其余 ${n} 个标签`,
-            });
-          }
-
-          images = (item.images || []).filter((im) => im.original);
-          if (images.length > 1) {
-            countEl.hidden = false;
-            nav.left.hidden = false;
-            nav.right.hidden = false;
-            thumbs.hidden = false;
-            thumbEls = images.map((im, i) => {
-              const b = document.createElement("button");
-              b.type = "button";
-              b.className = "bcs-thumb";
-              const t = document.createElement("img");
-              t.src = im.resized || im.original;
-              t.alt = "";
-              t.loading = "lazy";
-              b.appendChild(t);
-              b.addEventListener("click", () => showImage(i));
-              thumbs.appendChild(b);
-              return b;
-            });
-          }
-          showImage(0);
-
-          renderVariations(varEl, item.variations, item.price);
-
-          const desc = [item.description, item.factory_description]
-            .filter(Boolean)
-            .join("\n\n")
-            .trim();
-          descEl.classList.remove("bcs-dim");
-          if (desc) {
-            descEl.textContent = desc;
-            collapseDesc(descEl, "hidden");
-          } else {
-            descEl.classList.add("bcs-dim");
-            descEl.textContent = "（无商品说明）";
-          }
-        })
-        .catch((e) => {
-          if (!alive || !overlay.isConnected) return;
-          // 401/403 from items/<id>.json usually means R18 gate / not logged
-          // in; network timeouts and other statuses get a generic retry line
-          // so we don't blame R18 for a flaky request.
-          const msg = String((e && e.message) || e || "");
-          const status = /booth json (\d+)/.exec(msg)?.[1];
-          descEl.textContent =
-            status === "401" || status === "403"
-              ? "商品说明加载失败（R18 商品需登录 Booth 后在官网查看）"
-              : "商品说明加载失败，请稍后重试";
-        });
     }
 
-    // The site is a Solid.js SPA with delegated click handlers; a capture-phase
-    // listener on document runs first, so stopping propagation here keeps the
-    // native lightbox from opening. Survives re-renders since it's not bound to
-    // card DOM. Cards without a recognizable booth item link fall through to
-    // the site's own behavior.
-    document.addEventListener(
-      "click",
-      (e) => {
-        if (e.target.closest(".bcs-overlay")) return;
-        const wrap = e.target.closest(".cardImgWrap");
-        if (!wrap) return;
-        // Buttons inside the image area (carousel arrows, R18 reveal, card
-        // toggles…) keep their native behavior. Links do NOT bail: the site
-        // wraps every slide image in an <a href> (whose default it prevents
-        // itself), so treating <a> as "native UI" would swallow every click.
-        if (e.target.closest("button")) return;
-        const ctx = cardItemId(wrap);
-        if (!ctx) return;
-        e.preventDefault();
-        e.stopPropagation();
-        // cardEntryFromCard owns the (brittle) SPA-DOM extraction — the same
-        // .cardTitle||link title and wrap image the modal seed needs, so a
-        // markup change only has to be fixed in one place.
-        openModal(cardEntryFromCard(ctx));
-      },
-      true,
-    );
-
-    // Wish-toggle star shared by history tiles and product cards: optimistic
-    // .on flip, setWished, revert + hint on failure. `tag` is "span" inside a
-    // history tile (the tile itself is a <button>; buttons don't nest) and
-    // "button" on cards (the card click interceptor lets buttons through).
-    // The item id rides on dataset so a badge pass can re-point a recycled
-    // card's star without rebuilding it.
-    function makeTileStar(id, tag, onDone, entry) {
-      const star = document.createElement(tag);
-      if (tag === "button") star.type = "button";
-      star.className = "bcs-tile-star";
-      star.dataset.id = id;
-      star.innerHTML = STAR_SVG;
-      star.addEventListener("click", (e) => {
-        // Neither the site's delegated handlers nor the card interceptor
-        // should react to a star click.
-        e.preventDefault();
-        e.stopPropagation();
-        const on = !star.classList.contains("on");
-        star.classList.toggle("on", on);
-        const source = star.bcsEntry || entry;
-        const wishEntry =
-          typeof source === "function" ? source(star.dataset.id) : source;
-        setWished(star.dataset.id, on, wishEntry).then(
-          () => onDone && onDone(),
-          () => {
-            star.classList.toggle("on", !on);
-            flashWishFail(star);
-          },
-        );
-      });
-      return star;
+    function scanDialogs() {
+      document.querySelectorAll('[role="dialog"]').forEach(injectIntoDialog);
     }
 
-    // 已看 chip + wish star on product cards. The SPA re-renders freely, so a
-    // body-level MutationObserver queues only new/changed card roots for a
-    // rAF-batched pass. The badge container's presence doubles as the
-    // per-card "already processed" marker; hidden-toggles keep state fresh
-    // without re-creating nodes. The star waits for the wish set; 已看 renders
-    // once the history set resolves.
-    const BADGE_BATCH_SIZE = 48;
-    const badgeRoots = new Set();
-    const badgeWraps = new Set();
-    const knownCardWraps = new Set();
-    const PLUGIN_SURFACE = ".bcs-overlay, .bcs-badges, .bcs-tile-star";
-    const inPluginSurface = (el) =>
-      !!(el && el.closest && el.closest(PLUGIN_SURFACE));
-    function queueBadgeRoots(roots) {
-      roots.forEach((root) => {
-        if (root && root.nodeType === 1 && !inPluginSurface(root)) {
-          badgeRoots.add(root);
-        }
-      });
-      scheduleBadges();
-    }
-    function queueBadgeWraps(wraps) {
-      wraps.forEach((wrap) => {
-        if (!wrap || wrap.isConnected === false) {
-          knownCardWraps.delete(wrap);
-          return;
-        }
-        badgeWraps.add(wrap);
-      });
-      scheduleBadges();
-    }
-    // Drop wraps the SPA has removed so a long scroll session doesn't keep
-    // a growing set of detached nodes alive via knownCardWraps.
-    function pruneKnownCardWraps() {
-      for (const wrap of [...knownCardWraps]) {
-        if (!wrap.isConnected) knownCardWraps.delete(wrap);
-      }
-    }
-    function queueAllBadges() {
-      if (knownCardWraps.size) {
-        pruneKnownCardWraps();
-        queueBadgeWraps(knownCardWraps);
-      } else {
-        queueBadgeRoots([document.body]);
-      }
-    }
-    const runWhenIdle = (fn) => {
-      if (typeof requestIdleCallback === "function") {
-        requestIdleCallback(fn, { timeout: 1500 });
-      } else {
-        setTimeout(fn, 350);
-      }
-    };
-    const collectCardWraps = (root, out) => {
-      if (inPluginSurface(root)) return;
-      const addWrap = (wrap) => {
-        if (!wrap || inPluginSurface(wrap)) return;
-        knownCardWraps.add(wrap);
-        out.add(wrap);
-      };
-      const own = root.closest && root.closest(".cardImgWrap");
-      if (own) addWrap(own);
-      if (root.querySelectorAll) {
-        root.querySelectorAll(".cardImgWrap").forEach(addWrap);
-      }
-    };
-    function paintBadgeWrap(wrap, wishedBadgeSet, seen) {
-      if (wrap.isConnected === false) {
-        knownCardWraps.delete(wrap);
-        return;
-      }
-      const ctx = cardItemId(wrap);
-      if (!ctx) return;
-      const id = ctx.id;
-      let box = wrap.querySelector(".bcs-badges");
-      if (!box) {
-        box = document.createElement("div");
-        box.className = "bcs-badges";
-        box.innerHTML = '<span class="bcs-badge">已看</span>';
-        wrap.appendChild(box);
-      }
-      let star = wrap.querySelector(".bcs-tile-star");
-      if (!star) {
-        star = makeTileStar(id, "button", queueAllBadges);
-        wrap.appendChild(star);
-      }
-      star.dataset.id = id; // the SPA may recycle the wrap for another item
-      star.bcsEntry = () => cardEntryFromCard(cardItemId(wrap), star.dataset.id);
-      // Seen = grey veil over the whole image (class + ::after) plus the
-      // chip — the veil reads at grid-scan distance, the chip labels why.
-      // Union of the live server set (newest ~20 + this-session views) and the
-      // local archive, so a card viewed long ago stays greyed even after Booth
-      // pushed it off history.json.
-      const isSeen = seen.has(id) || histArchive.has(id);
-      wrap.classList.toggle("bcs-seen", isSeen);
-      box.children[0].hidden = !isSeen;
-      // The star doubles as the wished indicator: hidden until the wish
-      // set resolves (same rule as the modal star), then constant gold
-      // when wished, hover-revealed when not.
-      star.hidden = !wishedBadgeSet;
-      star.classList.toggle("on", !!(wishedBadgeSet && wishedBadgeSet.has(id)));
-    }
-    let badgeQueued = false;
-    function scheduleBadges() {
-      if (badgeQueued) return;
-      badgeQueued = true;
-      requestAnimationFrame(() => {
-        badgeQueued = false;
-        const roots = [...badgeRoots];
-        badgeRoots.clear();
-        const wraps = new Set(badgeWraps);
-        badgeWraps.clear();
-        if (!roots.length && !wraps.size) return;
-        // Stars stay hidden until any wish walk has succeeded.
-        const wishedBadgeSet = wishFetchedAt ? wishData.ids : null;
-        const seen = histData.ids;
-        roots.forEach((root) => collectCardWraps(root, wraps));
-        const list = [...wraps];
-        let i = 0;
-        const paintBatch = () => {
-          const end = Math.min(i + BADGE_BATCH_SIZE, list.length);
-          for (; i < end; i++) paintBadgeWrap(list[i], wishedBadgeSet, seen);
-          if (i < list.length) requestAnimationFrame(paintBatch);
-        };
-        paintBatch();
-      });
-    }
+    scanDialogs();
+    let scheduled = false;
     new MutationObserver((mutations) => {
-      const roots = [];
-      mutations.forEach((m) => {
-        m.addedNodes.forEach((node) => {
+      if (activeSearchPanel && !activeSearchPanel.panel.isConnected) {
+        activeSearchPanel.close();
+      }
+      if (scheduled) return;
+      const relevant = mutations.some((m) => {
+        const target = m.target;
+        if (
+          target.closest &&
+          target.closest(".bcs-bar, .bcs-panel")
+        ) {
+          return false;
+        }
+        if (target.closest && target.closest('[role="dialog"]')) return true;
+        for (const n of m.addedNodes) {
           if (
-            node.nodeType === 1 &&
-            !inPluginSurface(node)
+            n.nodeType === 1 &&
+            (n.matches?.('[role="dialog"]') ||
+              n.querySelector?.('[role="dialog"]'))
           ) {
-            roots.push(node);
+            return true;
           }
-        });
+        }
+        return false;
       });
-      if (roots.length) queueBadgeRoots(roots);
-    }).observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
-    queueAllBadges();
-    runWhenIdle(() => {
-      // Both badge sources are read from shared containers (wishData,
-      // histData) in the paint pass; failed fetches retry on the next call
-      // (modal open / history panel), which repaints on success.
-      getWishedIds().then(queueAllBadges).catch(() => {});
-      getHistory().then(queueAllBadges).catch(() => {});
-    });
-
-    // "Recently viewed" panel behind a fixed corner button. Reuses the
-    // overlay stack + .bcs-modal shell; a grid entry reopens the product
-    // modal with the stored seed (same shape a card click produces).
-    function openHistory() {
-      const overlay = document.createElement("div");
-      overlay.className = "bcs-overlay";
-      const modal = document.createElement("div");
-      modal.className = "bcs-modal";
-      modal.setAttribute("role", "dialog");
-      modal.setAttribute("aria-modal", "true");
-      modal.setAttribute("aria-label", "最近看过");
-      modal.innerHTML = '<div class="bcs-hist-head"><span>最近看过</span></div>';
-      overlay.appendChild(modal);
-      // Sections (收藏 / 最近 / 更早 grids + headers) live in this body so a
-      // re-render just replaceChildren()s it — no need to enumerate every class
-      // render() might have appended. The head (title + filter) persists.
-      const body = document.createElement("div");
-      body.className = "bcs-hist-body";
-      modal.append(body);
-
-      const filterWrap = document.createElement("div");
-      filterWrap.className = "bcs-filter-wrap";
-      const filter = document.createElement("input");
-      filter.type = "search";
-      filter.className = "bcs-hist-filter";
-      filter.placeholder = "筛选标题/店铺…";
-      filterWrap.appendChild(filter);
-      modal.firstElementChild.appendChild(filterWrap);
-
-      // Clear-all for the server-side history. Destructive and irreversible
-      // (wipes the whole account's viewed list on Booth, not just this
-      // panel), so it arms on first click and only fires on a second click
-      // within 3s. Lives in the 最近 section header (render() re-appends it
-      // there) so its blast radius reads as that list only, not the wish
-      // strip; render() appends it only when the list is non-empty.
-      const clearBtn = document.createElement("button");
-      clearBtn.type = "button";
-      clearBtn.className = "bcs-hist-clear";
-      const CLEAR_LABEL = "清空记录";
-      clearBtn.textContent = CLEAR_LABEL;
-      let armTimer = 0;
-      const disarm = () => {
-        clearTimeout(armTimer);
-        clearBtn.classList.remove("armed");
-        clearBtn.textContent = CLEAR_LABEL;
-      };
-      const scheduleDisarm = () => {
-        clearTimeout(armTimer);
-        armTimer = setTimeout(disarm, 3000);
-      };
-      clearBtn.addEventListener("click", () => {
-        if (clearBtn.disabled) return;
-        if (!clearBtn.classList.contains("armed")) {
-          clearBtn.classList.add("armed");
-          clearBtn.textContent = "确认清空？";
-          scheduleDisarm();
-          return;
-        }
-        clearTimeout(armTimer);
-        clearBtn.disabled = true;
-        clearBtn.textContent = "清空中…";
-        clearHistory()
-          .then(
-            () => {
-              disarm();
-              render(); // shows 暂无浏览记录, drops the button
-              queueAllBadges(); // card veils come off
-            },
-            () => {
-              clearBtn.classList.remove("armed");
-              clearBtn.textContent = "清空失败";
-              scheduleDisarm();
-            },
-          )
-          .finally(() => {
-            clearBtn.disabled = false;
-          });
+      if (!relevant) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        scanDialogs();
       });
-
-      // Past filter queries (GM-stored, deduped, capped) show in a custom
-      // dropdown on focus, each row with a ✕ to forget it. Saved after the
-      // user pauses typing (plus immediately on Enter or a tile click), so
-      // prefixes don't pile up per keystroke. No-ops without storage grants.
-      const FILTER_HIST_KEY = "bcs-filter-history";
-      const FILTER_DEBOUNCE = 80;
-      const readFilterHist = () => {
-        const list = canStore ? gmReadJson(FILTER_HIST_KEY, []) : [];
-        return Array.isArray(list) ? list : [];
-      };
-      const saveFilterHist = (raw) => {
-        const q = (raw || "").trim();
-        if (!canStore || !q) return;
-        gmWriteJson(
-          FILTER_HIST_KEY,
-          [q, ...readFilterHist().filter((s) => s !== q)].slice(0, 10),
-        );
-      };
-      const drop = document.createElement("div");
-      drop.className = "bcs-filter-drop";
-      drop.hidden = true;
-      filterWrap.appendChild(drop);
-      const renderDrop = () => {
-        const list = readFilterHist();
-        drop.replaceChildren();
-        drop.hidden = !list.length;
-        for (const q of list) {
-          const row = document.createElement("div");
-          row.className = "bcs-filter-row";
-          const text = document.createElement("span");
-          text.className = "q";
-          text.textContent = q;
-          const del = document.createElement("button");
-          del.type = "button";
-          del.className = "bcs-filter-del";
-          del.setAttribute("aria-label", "删除搜索记录");
-          del.textContent = "✕";
-          del.addEventListener("click", (e) => {
-            e.stopPropagation();
-            gmWriteJson(FILTER_HIST_KEY, readFilterHist().filter((s) => s !== q));
-            renderDrop(); // hides itself when the list empties
-          });
-          row.addEventListener("click", () => {
-            filter.value = q;
-            saveFilterHist(q); // bump to front
-            render();
-            drop.hidden = true;
-          });
-          row.append(text, del);
-          drop.appendChild(row);
-        }
-      };
-      filter.addEventListener("focus", renderDrop);
-      filter.addEventListener("click", renderDrop);
-      let saveTimer = 0;
-      let filterTimer = 0;
-      const scheduleFilterRender = () => {
-        clearTimeout(filterTimer);
-        filterTimer = setTimeout(() => render(), FILTER_DEBOUNCE);
-      };
-      filter.addEventListener("input", () => {
-        scheduleFilterRender();
-        drop.hidden = true;
-        clearTimeout(saveTimer);
-        saveTimer = setTimeout(() => saveFilterHist(filter.value), 1200);
-      });
-      filter.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          clearTimeout(saveTimer);
-          saveFilterHist(filter.value);
-        }
-      });
-      overlay.addEventListener("mousedown", (e) => {
-        if (!filterWrap.contains(e.target)) drop.hidden = true;
-      });
-
-      const histOverlay = openOverlay(overlay, {
-        onClose: () => {
-          clearTimeout(saveTimer);
-          clearTimeout(filterTimer);
-          clearTimeout(armTimer);
-        },
-      });
-      attachModalClose(modal, () => histOverlay.close());
-
-      let wished = null; // Set<string> once resolved; null = unknown/hidden
-      let wishInfo = null; // Map<id, {id,title,img,price,shop}> from the endpoint
-      let histState = "loading"; // "loading" | "ok" | "fail"
-      function makeHistoryEmpty(text) {
-        const empty = document.createElement("div");
-        empty.className = "bcs-hist-empty";
-        empty.textContent = text;
-        return empty;
-      }
-      function historyEmptyMessage() {
-        if (histState === "loading") return "加载中…";
-        if (histState === "fail") return "历史加载失败，稍后再试";
-        return "暂无浏览记录";
-      }
-      function wishEntryFor(id, historyById) {
-        return (
-          (wishInfo && wishInfo.get(id)) ||
-          historyById.get(id) ||
-          localCardEntry(id, {}, "")
-        );
-      }
-      // fresh: both lists live on Booth's servers now — refetch on every
-      // open so likes/views made on booth.pm show up without a page reload.
-      getWishList(true)
-        .then((w) => {
-          wished = w.ids;
-          wishInfo = w.byId;
-          render();
-          queueAllBadges(); // card ★s may have changed too
-        })
-        .catch(() => render());
-      getHistory(true)
-        .then(() => {
-          histState = "ok";
-          render();
-          queueAllBadges();
-        })
-        .catch(() => {
-          histState = "fail";
-          render();
-        });
-
-      // One tile for either section. `entry` needs {id,title,img,price,shop}.
-      const makeTile = (entry) => {
-        const item = document.createElement("button");
-        item.type = "button";
-        item.className = "bcs-hist-item";
-        const img = document.createElement("img");
-        img.alt = "";
-        img.loading = "lazy";
-        // Grid-sized variant; also normalizes entries written before the
-        // canonical-URL change (which stored a baked 72px variant).
-        if (entry.img) img.src = boothImgVariant(entry.img, HIST_IMG_SPEC);
-        // Star anchors to this wrapper, not the tile: tile heights vary
-        // (title lines, optional meta/date), the square thumb never does.
-        const thumb = document.createElement("div");
-        thumb.className = "bcs-hist-thumb";
-        thumb.appendChild(img);
-        const title = document.createElement("div");
-        title.className = "ht";
-        title.textContent = entry.title || `Booth #${entry.id}`;
-        const meta = document.createElement("div");
-        meta.className = "hm";
-        meta.textContent = [entry.shop, entry.price].filter(Boolean).join(" · ");
-        meta.hidden = !meta.textContent;
-        item.append(thumb, title, meta);
-        if (wished) {
-          const star = makeTileStar(entry.id, "span", () => {
-            render(); // moves the tile between sections
-            queueAllBadges();
-          }, entry);
-          star.classList.toggle("on", wished.has(String(entry.id)));
-          thumb.appendChild(star);
-        }
-        item.addEventListener("click", () => {
-          // A query that led to opening something earned a history slot.
-          saveFilterHist(filter.value);
-          // Stack the product modal ON TOP of the history panel (the
-          // overlay stack routes Escape/backdrop to the topmost), so
-          // closing the modal returns to the list instead of the page.
-          // Seed with the full-size image (strip legacy baked variants) —
-          // the modal stage is far larger than a grid cell — and re-render
-          // the grid on close since the visit just reordered it.
-          openModal(
-            { id: entry.id, title: entry.title, img: boothImgVariant(entry.img) },
-            { onClose: render },
-          );
-        });
-        return item;
-      };
-
-      const WISH_SHOW = 12;
-      const entrySearchText = (entry) =>
-        [entry.title, entry.shop, entry.price]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-      const matchesQuery = (entry, q) => !q || entrySearchText(entry).includes(q);
-      function renderLazyTiles(container, entries, show, make, labels) {
-        const appendRange = (from, to) => {
-          const frag = document.createDocumentFragment();
-          for (const entry of entries.slice(from, to)) {
-            frag.appendChild(make(entry));
-          }
-          container.appendChild(frag);
-        };
-        appendRange(0, Math.min(show, entries.length));
-        if (entries.length <= show) return;
-
-        let open = false;
-        const { toggle, sync } = makeCountToggle(labels, entries.length - show);
-        sync(false);
-        toggle.addEventListener("click", () => {
-          if (open) {
-            while (container.children.length > show) container.lastElementChild.remove();
-            open = false;
-          } else {
-            appendRange(show, entries.length);
-            open = true;
-          }
-          sync(open);
-        });
-        container.insertAdjacentElement("afterend", toggle);
-      }
-      const render = () => {
-        body.replaceChildren();
-        const list = histData.list;
-        const q = filter.value.trim().toLowerCase();
-        const byId = new Map(list.map((e) => [String(e.id), e]));
-        const wishEntries = wished
-          ? [...wished]
-              .map((id) => wishEntryFor(id, byId))
-              .filter((entry) => matchesQuery(entry, q))
-          : [];
-        const histEntries = list.filter((entry) => matchesQuery(entry, q));
-        const hasWish = !!wishEntries.length;
-        // 更早: local archive matches, but only what Booth already evicted from
-        // 最近 (excluded by histData.ids) so the two grids never double up. Only
-        // built when filtering — an empty query keeps the archive out of the
-        // default view, so it never touches the panel's normal ordering.
-        const archiveEntries = q
-          ? histArchive
-              .list()
-              .filter(
-                (entry) =>
-                  !histData.ids.has(String(entry.id)) && matchesQuery(entry, q),
-              )
-          : [];
-
-        // Both lists need a Booth session; the wish endpoint's 401 is the
-        // only reliable logged-out signal (history.json returns [] either
-        // way), so one hint replaces both sections.
-        if (wishData.loggedOut) {
-          body.appendChild(
-            makeHistoryEmpty("未登录 Booth — 登录后这里会显示最近看过与收藏"),
-          );
-          return;
-        }
-
-        if (q && !wishEntries.length && !histEntries.length && !archiveEntries.length) {
-          const message =
-            histState === "loading" && !list.length
-              ? "加载中…"
-              : "没有匹配的收藏或历史";
-          body.appendChild(makeHistoryEmpty(message));
-          return;
-        }
-
-        // 收藏 strip: ids straight from the wish set (newest-first as the
-        // endpoint returned them). Tile data comes with the wish response
-        // itself (falling back to the history entry for an id just starred
-        // this page load, which the memoized response doesn't know about).
-        if (hasWish) {
-          const sub = document.createElement("div");
-          sub.className = "bcs-hist-sub";
-          sub.textContent = "★ 收藏";
-          body.appendChild(sub);
-          const wgrid = document.createElement("div");
-          wgrid.className = "bcs-hist-grid";
-          body.appendChild(wgrid);
-          renderLazyTiles(wgrid, wishEntries, WISH_SHOW, makeTile, {
-            count: `共 ${wishEntries.length} 件`,
-            collapse: "收起收藏",
-            expand: (n) => `展开其余 ${n} 件`,
-          });
-        }
-
-        // 最近 header row also hosts the clear button (re-appended each
-        // render — the node persists so its armed/disabled state survives;
-        // appending only on a non-empty list is what hides it otherwise).
-        // Header only when there is something to separate or clear.
-        if (histEntries.length || (!q && (hasWish || list.length))) {
-          const sub2 = document.createElement("div");
-          sub2.className = "bcs-hist-sub bcs-hist-sub-row";
-          const label = document.createElement("span");
-          label.textContent = "最近";
-          sub2.append(label);
-          if (list.length) sub2.append(clearBtn);
-          body.appendChild(sub2);
-        }
-
-        if (histEntries.length) {
-          const grid = document.createElement("div");
-          grid.className = "bcs-hist-grid";
-          body.appendChild(grid);
-          const frag = document.createDocumentFragment();
-          for (const entry of histEntries) frag.appendChild(makeTile(entry));
-          grid.appendChild(frag);
-        } else if (!q) {
-          // No filter and no 最近 rows: the only reason to be here is an empty
-          // (or still-loading) server history — say so and stop. With a query
-          // present, fall through so the 更早 archive section can still render.
-          body.appendChild(makeHistoryEmpty(historyEmptyMessage()));
-          return;
-        }
-
-        // 更早（本地历史）: items that fell off Booth's newest-20 window but are
-        // still in the local archive. Search-only, lazy-rendered like 收藏.
-        if (archiveEntries.length) {
-          const sub3 = document.createElement("div");
-          sub3.className = "bcs-hist-sub";
-          sub3.textContent = "更早（本地历史）";
-          body.appendChild(sub3);
-          const agrid = document.createElement("div");
-          agrid.className = "bcs-hist-grid";
-          body.appendChild(agrid);
-          renderLazyTiles(agrid, archiveEntries, WISH_SHOW, makeTile, {
-            count: `共 ${archiveEntries.length} 件`,
-            collapse: "收起更早",
-            expand: (n) => `展开其余 ${n} 件`,
-          });
-        }
-      };
-      render();
-    }
-
-    // History lives on Booth's servers now, so the entry point needs no
-    // storage grant; logged out, the panel shows its own login hint.
-    const fab = document.createElement("button");
-    fab.type = "button";
-    fab.className = "bcs-hist-fab";
-    fab.title = "最近看过";
-    fab.setAttribute("aria-label", "最近看过");
-    fab.innerHTML =
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15.5 14"></polyline></svg>';
-    fab.addEventListener("click", openHistory);
-    document.body.appendChild(fab);
+    }).observe(document.body, { childList: true, subtree: true });
   }
 
   // ---------------------------------------------------------------- entry
 
-  if (location.hostname === "vrcatalogue.com") {
-    initVrcatalogue();
-  } else {
+  if (
+    location.hostname === "booth.pm" ||
+    location.hostname.endsWith(".booth.pm")
+  ) {
     initBooth();
+  } else {
+    initBoothDex();
   }
 })();
