@@ -96,8 +96,11 @@ Key Radix Dialog details:
 - `showPanel` mounts `.bcs-panel` inside the enclosing `[role="dialog"]` (with `position: absolute`)
   rather than `document.body`: Radix sets `pointer-events: none` on `body`, blocks outside wheel
   scrolling via `RemoveScroll`, and dismisses the dialog on outside `pointerdown`.
-- Capture-phase `Escape` closes an open `.bcs-panel` before Radix's bubble-phase `DismissableLayer`
-  handler sees it, so `Escape` dismisses the result dropdown without closing the item dialog.
+- `Escape` is handled on `window` in the capture phase. Radix's `DismissableLayer` also listens on
+  `document` in the capture phase, so on `document` the first-registered listener wins — and Radix
+  registers first when the dialog mounts before the userscript runs. `window` capture fires ahead of
+  every `document` listener regardless of order, so `Escape` closes the result dropdown without
+  dismissing the item dialog.
 
 Do not add BoothDex card-level batch scanning for external sources (for example, automatically
 checking VRCPirate/RipperStore status across visible cards or search-result grids). Keep external

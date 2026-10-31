@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      3.0.0
+// @version      3.0.1
 // @description  在 Booth 商品页与 BoothDex 商品详情中查询 VRCPirate / RipperStore 同 ID 资源。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -344,13 +344,15 @@
     return { auth: false, message: RETRY_MSG };
   }
 
-  // At most one search result panel. Capture-phase Escape closes the panel
-  // first without letting BoothDex's Radix Dialog dismiss underneath it.
+  // At most one search result panel. Radix's DismissableLayer listens for
+  // Escape on `document` in the capture phase, so whichever registered first
+  // wins there; `window` capture runs before any document listener regardless
+  // of order, letting Escape close this panel without dismissing the dialog.
   let activeSearchPanel = null;
   function closePanels() {
     if (activeSearchPanel) activeSearchPanel.close();
   }
-  document.addEventListener(
+  window.addEventListener(
     "keydown",
     (e) => {
       if (e.key !== "Escape" || !activeSearchPanel) return;
@@ -395,7 +397,9 @@
     const dialog = bar.closest('[role="dialog"]');
     if (dialog) panel.style.position = "absolute";
     (dialog || document.body).appendChild(panel);
+    let closed = false;
     const close = () => {
+      closed = true;
       panel.remove();
       document.removeEventListener("click", onDocClick);
       window.removeEventListener("resize", place);
@@ -449,11 +453,15 @@
       if (!panel.contains(ev.target)) close();
     };
     activeSearchPanel = { panel, close };
-    place();
+    // Listeners go in before the first place(): it may close() immediately
+    // (detached/offscreen bar), and close() must find them to remove them.
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
+    place();
     // Defer so the opening click doesn't immediately dismiss the panel.
-    setTimeout(() => document.addEventListener("click", onDocClick), 0);
+    setTimeout(() => {
+      if (!closed) document.addEventListener("click", onDocClick);
+    }, 0);
   }
 
   // The VRCPirate/RipperStore button bar, shared by the Booth item page and
