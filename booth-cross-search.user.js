@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Booth Cross Search (VRCPirate / RipperStore)
 // @namespace    booth-cross-search
-// @version      3.0.2
+// @version      3.1.0
 // @description  在 Booth 商品页与 BoothDex 商品详情中查询 VRCPirate / RipperStore 同 ID 资源。
 // @author       MelodyBomber
 // @match        *://booth.pm/*items/*
@@ -28,27 +28,31 @@
     (document.head || document.documentElement).appendChild(style);
   }
 
-  // Token names follow BoothDex's shadcn variables (--popover, --foreground,
-  // --muted-foreground, --accent, --muted, --border, --warning); none of them
-  // are defined on booth.pm, so booth.pm falls through to the light hex
-  // defaults while BoothDex adapts to both its light and dark themes.
+  // Token names follow BoothDex's Astryx theme variables (--color-neutral,
+  // --color-text-primary, --color-border, ...); none of them are defined on
+  // booth.pm, so booth.pm falls through to the light hex defaults while
+  // BoothDex adapts to both its light and dark themes.
   addStyle(`
     .bcs-bar {
       position: relative; display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; align-items: center;
       font-family: -apple-system, "Helvetica Neue", Arial, "Hiragino Sans", "Noto Sans JP", sans-serif;
     }
-    [role="dialog"] .bcs-bar {
-      margin: 0 0 1rem; font-family: inherit;
-    }
+    dialog .bcs-bar { margin: 0; font-family: inherit; }
     .bcs-btn {
       display: inline-flex; align-items: center; gap: 6px;
       padding: 7px 16px; border-radius: 20px; font-size: 13px; font-weight: 700; font-family: inherit;
-      cursor: pointer; border: 1px solid var(--border, #dcdcdc);
-      color: var(--foreground, #222); background: var(--popover, #fff);
+      cursor: pointer; border: 1px solid #dcdcdc;
+      color: var(--color-text-primary, #222); background: #fff;
       line-height: 1.4; transition: background .15s, border-color .15s;
     }
-    .bcs-btn:hover { background: var(--accent, #f5f5f5); border-color: var(--border, #c8c8c8); }
-    .bcs-btn:active { background: var(--muted, #ececec); }
+    .bcs-btn:hover { background: #f5f5f5; border-color: #c8c8c8; }
+    .bcs-btn:active { background: #ececec; }
+    dialog .bcs-btn {
+      border: none; border-radius: var(--radius-element, 10px); font-weight: 500;
+      background-color: var(--color-neutral, #f1f1f1);
+    }
+    dialog .bcs-btn:hover { background-image: linear-gradient(var(--color-overlay-hover), var(--color-overlay-hover)); }
+    dialog .bcs-btn:active { background-image: linear-gradient(var(--color-overlay-pressed), var(--color-overlay-pressed)); }
     .bcs-btn .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #bbb; transition: background .2s; }
     .bcs-btn .dot.pending { background: #bbb; animation: bcs-pulse 1s ease-in-out infinite; }
     .bcs-btn .dot.ok { background: #2e9e44; }
@@ -59,27 +63,27 @@
     .bcs-btn .bcs-cnt {
       min-width: 16px; padding: 0 5px; border-radius: 8px; text-align: center;
       font-size: 11px; font-weight: 700; line-height: 16px;
-      background: var(--muted, #efefef); color: var(--muted-foreground, #777);
+      background: var(--color-neutral, #efefef); color: var(--color-text-secondary, #777);
     }
     .bcs-btn .bcs-cnt[hidden] { display: none; }
-    .bcs-warn { font-size: 11px; color: var(--warning, #b8860b); font-weight: 600; text-decoration: none; }
+    .bcs-warn { font-size: 11px; color: var(--color-text-warning, #b8860b); font-weight: 600; text-decoration: none; }
     .bcs-warn:hover { text-decoration: underline; }
     .bcs-panel {
       position: fixed; z-index: 100001;
-      background: var(--popover, #fff); border: 1px solid var(--border, #ddd); border-radius: 8px;
-      box-shadow: 0 6px 20px rgba(0,0,0,.22);
+      background: var(--color-background-popover, #fff); border: 1px solid var(--color-border, #ddd);
+      border-radius: var(--radius-container, 8px); box-shadow: var(--shadow-med, 0 6px 20px rgba(0,0,0,.22));
       min-width: 280px; max-width: min(420px, calc(100vw - 16px)); max-height: 320px; overflow-y: auto;
       overscroll-behavior: contain; box-sizing: border-box; font-family: inherit;
     }
     .bcs-panel-item {
-      display: block; padding: 8px 10px; border-bottom: 1px solid var(--border, #eee);
-      text-decoration: none; color: var(--foreground, #222);
+      display: block; padding: 8px 10px; border-bottom: 1px solid var(--color-border, #eee);
+      text-decoration: none; color: var(--color-text-primary, #222);
     }
     .bcs-panel-item:last-child { border-bottom: none; }
-    .bcs-panel-item:hover { background: var(--accent, #f5f5f5); }
+    .bcs-panel-item:hover { background: var(--color-overlay-hover, #f5f5f5); }
     .bcs-panel-item .t { font-size: 13px; font-weight: 600; display: block; }
-    .bcs-panel-item .s { font-size: 11px; color: var(--muted-foreground, #888); }
-    .bcs-panel-empty { padding: 10px; font-size: 13px; color: var(--muted-foreground, #888); }
+    .bcs-panel-item .s { font-size: 11px; color: var(--color-text-secondary, #888); }
+    .bcs-panel-empty { padding: 10px; font-size: 13px; color: var(--color-text-secondary, #888); }
     .bcs-desc.bcs-collapsed { max-height: 240px !important; overflow: hidden !important; position: relative; }
     .bcs-desc.bcs-collapsed::after {
       content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 90px;
@@ -347,10 +351,10 @@
     return { auth: false, message: RETRY_MSG };
   }
 
-  // At most one search result panel. Radix's DismissableLayer listens for
-  // Escape on `document` in the capture phase, so whichever registered first
-  // wins there; `window` capture runs before any document listener regardless
-  // of order, letting Escape close this panel without dismissing the dialog.
+  // At most one search result panel. `window` capture runs before any page
+  // keydown listener, and cancelling the keydown also suppresses the native
+  // <dialog> close request, so Escape closes this panel without dismissing
+  // the item dialog.
   let activeSearchPanel = null;
   function closePanels() {
     if (activeSearchPanel) activeSearchPanel.close();
@@ -394,10 +398,10 @@
         panel.appendChild(a);
       }
     }
-    // Inside BoothDex's Radix Dialog, mount into the dialog itself rather than
-    // document.body: Radix sets body pointer-events:none, locks outside wheel
-    // scroll (RemoveScroll), and treats outside pointerdowns as dialog-dismiss.
-    const dialog = bar.closest('[role="dialog"]');
+    // Inside BoothDex's modal <dialog>, mount into the dialog itself rather
+    // than document.body: the dialog sits in the top layer and everything
+    // outside it is inert.
+    const dialog = bar.closest("dialog");
     if (dialog) panel.style.position = "absolute";
     (dialog || document.body).appendChild(panel);
     let closed = false;
@@ -786,12 +790,13 @@
 
   // ---------------------------------------------------------------- boothdex
 
-  // BoothDex renders item details inside a Radix Dialog ([role="dialog"]) that
-  // includes a Booth buy link (`https://booth.pm/ja/items/<id>`) and a visible
-  // <h2> title alongside a screen-reader-only DialogTitle (<h2 data-slot="dialog-title">).
-  // Other dialogs (sign-in, saved searches, Ctrl+K palette) have no Booth item
-  // link and are ignored. Switching items via "more from shop" remounts the
-  // dialog body in place, which dataset.itemId detects and replaces.
+  // BoothDex renders item details inside a native modal <dialog
+  // class="astryx-dialog"> that includes a Booth buy link
+  // (`https://booth.pm/ja/items/<id>`) and the item title as its <h1> (the
+  // header <h2> is the shop name). Other dialogs (lightbox, sign-in) have no
+  // Booth item link and are ignored. The item dialog stays mounted while
+  // closed and re-renders in place for the next item, which dataset.itemId
+  // detects and replaces.
   function initBoothDex() {
     function injectIntoDialog(dialog) {
       const link = dialog.querySelector('a[href*="booth.pm/"][href*="/items/"]');
@@ -803,9 +808,7 @@
         if (existing.dataset.itemId === itemId) return;
         existing.remove();
       }
-      const titleEl = dialog.querySelector(
-        'h2:not([data-slot="dialog-title"]):not(.sr-only)',
-      );
+      const titleEl = dialog.querySelector("h1");
       if (!titleEl) return;
       closePanels();
       const bar = buildSearchBar(itemId);
@@ -814,7 +817,7 @@
     }
 
     function scanDialogs() {
-      document.querySelectorAll('[role="dialog"]').forEach(injectIntoDialog);
+      document.querySelectorAll("dialog").forEach(injectIntoDialog);
     }
 
     scanDialogs();
@@ -832,12 +835,11 @@
         ) {
           return false;
         }
-        if (target.closest && target.closest('[role="dialog"]')) return true;
+        if (target.closest && target.closest("dialog")) return true;
         for (const n of m.addedNodes) {
           if (
             n.nodeType === 1 &&
-            (n.matches?.('[role="dialog"]') ||
-              n.querySelector?.('[role="dialog"]'))
+            (n.matches?.("dialog") || n.querySelector?.("dialog"))
           ) {
             return true;
           }

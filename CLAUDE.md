@@ -81,26 +81,25 @@ confirmed present.
 
 ### BoothDex (`initBoothDex`)
 
-BoothDex is a Next.js SPA that already provides a full native `ItemDetail` Radix Dialog
-(`[role="dialog"]`), account favourites, gallery/zoom, and item translations. `initBoothDex()`
-observes dialog mounts/updates (ignoring card-grid mutations outside `[role="dialog"]`) and injects
-`buildSearchBar(itemId)` right below the visible item title `<h2>` (skipping Radix's
-`[data-slot="dialog-title"]` screen-reader heading).
+BoothDex is a Next.js SPA built on the Astryx design system. It already provides a full item
+detail dialog — a native modal `<dialog class="astryx-dialog">` — plus account favourites,
+gallery/zoom (a separate `<dialog class="astryx-lightbox">`), and item translations.
+`initBoothDex()` observes dialog mounts/updates (ignoring card-grid mutations outside `<dialog>`)
+and injects `buildSearchBar(itemId)` right below the item title, which is the dialog's `<h1>` (the
+header `<h2>` is the shop name). Filter popovers use `[role="dialog"]` divs and are not matched.
 
-Key Radix Dialog details:
+Key dialog details:
 
 - The Booth item ID comes from the dialog's Booth buy link (`a[href*="booth.pm/"][href*="/items/"]`),
-  so non-item dialogs (sign-in, saved searches, `Ctrl+K` command palette) are skipped automatically.
-  `bar.dataset.itemId` detects in-place item switches (e.g. clicking an item in "more from shop")
-  and swaps the bar cleanly.
-- `showPanel` mounts `.bcs-panel` inside the enclosing `[role="dialog"]` (with `position: absolute`)
-  rather than `document.body`: Radix sets `pointer-events: none` on `body`, blocks outside wheel
-  scrolling via `RemoveScroll`, and dismisses the dialog on outside `pointerdown`.
-- `Escape` is handled on `window` in the capture phase. Radix's `DismissableLayer` also listens on
-  `document` in the capture phase, so on `document` the first-registered listener wins — and Radix
-  registers first when the dialog mounts before the userscript runs. `window` capture fires ahead of
-  every `document` listener regardless of order, so `Escape` closes the result dropdown without
-  dismissing the item dialog.
+  so non-item dialogs (lightbox, sign-in) are skipped automatically. The item `<dialog>` stays
+  mounted (just not `open`) after closing and re-renders in place for the next item;
+  `bar.dataset.itemId` detects the switch and swaps the bar cleanly.
+- `showPanel` mounts `.bcs-panel` inside the enclosing `<dialog>` (with `position: absolute`)
+  rather than `document.body`: a modal dialog sits in the top layer and everything outside it is
+  inert, so a body-mounted panel would render underneath and be unclickable.
+- `Escape` is handled on `window` in the capture phase, which fires ahead of every page listener;
+  cancelling the keydown also suppresses the native `<dialog>` close request, so `Escape` closes
+  the result dropdown without dismissing the item dialog.
 
 Do not add BoothDex card-level batch scanning for external sources (for example, automatically
 checking VRCPirate/RipperStore status across visible cards or search-result grids). Keep external
@@ -114,6 +113,8 @@ source checks item-scoped to the detail dialog, unless the maintainer explicitly
 - No `GM_addStyle` — the iOS Userscripts app crashes on it even with the grant declared. Styles are
   injected manually via `addStyle()` (creates a `<style>` element and appends to `<head>`). Keep new
   styles going through this helper rather than reintroducing `GM_addStyle`.
-- CSS uses BoothDex's shadcn custom properties (`--popover`, `--foreground`, `--muted-foreground`,
-  `--accent`, `--muted`, `--border`, `--warning`) with light-theme hex fallbacks, since `booth.pm`
-  defines none of those variables while BoothDex defines all of them in both light and dark themes.
+- CSS uses BoothDex's Astryx custom properties (`--color-neutral`, `--color-text-primary`,
+  `--color-text-secondary`, `--color-text-warning`, `--color-border`, `--color-background-popover`,
+  `--color-overlay-hover/-pressed`, `--radius-*`, `--shadow-med`) with light-theme hex fallbacks,
+  since `booth.pm` defines none of those variables while BoothDex defines all of them in both light
+  and dark themes. Bar buttons inside `dialog` mirror the native secondary `astryx-button` look.
